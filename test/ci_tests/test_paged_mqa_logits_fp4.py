@@ -247,8 +247,8 @@ def op():
     if not torch.cuda.is_available():
         pytest.skip("GPU required")
     arch = torch.cuda.get_device_properties(0).gcnArchName
-    if not arch.startswith(("gfx928", "gfx936", "gfx938")):
-        pytest.skip("FP4 paged logits require gfx928/936/938")
+    if not arch.startswith(("gfx928", "gfx936", "gfx938", "gfx946")):
+        pytest.skip("FP4 paged logits require gfx928/936/938/946")
     return get_operator()
 
 

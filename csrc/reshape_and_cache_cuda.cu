@@ -94,7 +94,7 @@ static inline __device__ uint8_t float_to_fp8_e5m2(float f) {
 template <bool is_e4m3>
 static __device__ uint8_t to_f8_from_f32(float v1) {
   
-#if (defined(__gfx938__) )
+#if (defined(__gfx938__) || defined(__gfx946__) )
   union fp8x4{
     int int32;
     uint8_t  u8x4[4];

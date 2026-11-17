@@ -86,7 +86,7 @@ inline __device__ uint8_t float_to_fp8e4m3(float f) {
 
 inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
 {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
     int32_t temp;
     temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
@@ -101,7 +101,7 @@ inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
 
 inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
 {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     int32_t res;
     res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
     res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
@@ -144,7 +144,7 @@ inline __device__ uint8_t float_to_fp8e5m2(float f) {
 
 inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
 {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     int32_t res;
     res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
     res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
@@ -162,7 +162,7 @@ inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float 
 template <bool IS_E4M3>
 inline __device__ uint8_t float_to_fp8_cache_scalar(float value)
 {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     union {
         int32_t packed;
         uint8_t bytes[4];
@@ -187,7 +187,7 @@ inline __device__ uint8_t float_to_fp8_cache_scalar(float value)
 
 inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
 {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
     int32_t temp;
     temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
@@ -2299,7 +2299,7 @@ __device__ __forceinline__ uint32_t mimo_v2_float_to_fp8e4m3_x4(
     float b,
     float c,
     float d) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   int32_t out = 0;
   out = __builtin_hcu_cvt_pk_fp8_f32(a, b, out, false);
   out = __builtin_hcu_cvt_pk_fp8_f32(c, d, out, true);
@@ -2319,7 +2319,7 @@ __device__ __forceinline__ uint32_t mimo_v2_float_to_fp8e5m2_x4(
     float b,
     float c,
     float d) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   int32_t out = 0;
   out = __builtin_hcu_cvt_pk_bf8_f32(a, b, out, false);
   out = __builtin_hcu_cvt_pk_bf8_f32(c, d, out, true);

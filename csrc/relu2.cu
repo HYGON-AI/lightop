@@ -21,7 +21,7 @@ __device__ __forceinline__ T squared_relu_kernel(const T& x) {
 template <>
 __device__ __forceinline__ bfloat16 squared_relu_kernel<bfloat16>(const bfloat16& x) {
   
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
   short x_short = reinterpret_cast<const short&>(x);
   float x_f32 = __builtin_hcu_cvt_f32_bf16(x_short, false, 0, false);
   #else
@@ -31,7 +31,7 @@ __device__ __forceinline__ bfloat16 squared_relu_kernel<bfloat16>(const bfloat16
   float relu_val = x_f32 > 0.0f ? x_f32 : 0.0f;
   float sq_relu_f32 = relu_val * relu_val;
 
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
   short result_short = __builtin_hcu_cvt_bf16_f32(sq_relu_f32, false, false);
   return *(bfloat16*)&result_short;
   #else

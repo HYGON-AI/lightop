@@ -166,8 +166,15 @@ inline __device__ void prefetch_panel_to_lds(
     const int lds_addr =
         static_cast<int>(reinterpret_cast<uintptr_t>(lds_base)) +
         lds_elem * T::kElemBytes;
+    // wrap_amount counts groups of four dwords. gfx946 stores a dword
+    // count in M0[29:24] above the LDS byte address in M0[16:2].
+#if defined(__gfx946__)
+    const int m0_wrap_bits = (wrap_amount * 4) << 24;
+#else
+    const int m0_wrap_bits = wrap_amount << 16;
+#endif
     const int target_addr =
-        __builtin_amdgcn_readfirstlane(lds_addr + (wrap_amount << 16));
+        __builtin_amdgcn_readfirstlane(lds_addr + m0_wrap_bits);
 
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"

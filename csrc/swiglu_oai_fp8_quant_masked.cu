@@ -25,7 +25,7 @@ __device__ __forceinline__ float activate(float g, float u, float alpha,
 }
 
 __device__ __forceinline__ uint32_t pack4(float a, float b, float c, float d) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   uint32_t bits = 0;
   bits = __builtin_hcu_cvt_pk_fp8_f32(a, b, bits, false);
   return __builtin_hcu_cvt_pk_fp8_f32(c, d, bits, true);

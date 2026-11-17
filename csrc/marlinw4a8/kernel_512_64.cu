@@ -10,7 +10,7 @@ namespace marlin_moe_w4a8{
     采用顺序分割 条带方式
   */
 // 仅在 BW gfx 936 上才编译实际算子
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
   template <
           const int threads,          // number of threads in a threadblock
           const int thread_m_blocks,  // number of 16x16 blocks in the m

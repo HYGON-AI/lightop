@@ -473,7 +473,8 @@ dsv4_pack_sparse_topk_workspace(const torch::Tensor &full_ids,
   const auto stream = at::cuda::getCurrentCUDAStream();
   const auto options = full_ids.options().dtype(at::kInt);
 #if defined(__HIP_PLATFORM_AMD__)
-  if ((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0))
+  if ((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0 ||
+      std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx946", 6) == 0))
     return pack_workspace_gfx936(full_ids, indices, lengths, capacity, swa_rows);
 #endif
   auto hits = at::zeros({n}, options);
@@ -539,8 +540,9 @@ torch::Tensor dsv4_dequantize_sparse_topk_out(
                   topk > 0 && topk <= width, "invalid selection geometry");
   TORCH_CHECK(n <= q * topk, "selected dequantization requires the full-capacity workspace");
   const c10::cuda::CUDAGuard guard(full_ids.device());
-  TORCH_CHECK((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0),
-              "selected dequantization is currently supported on gfx936/gfx938");
+  TORCH_CHECK((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0 ||
+      std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx946", 6) == 0),
+              "selected dequantization is currently supported on gfx936/gfx938/gfx946");
   const auto options = full_ids.options().dtype(at::kInt);
   const int64_t words = (n + 31) / 32;
   auto bitmap = at::empty({words}, options), selected = at::empty({n}, options);
@@ -565,7 +567,7 @@ torch::Tensor dsv4_dequantize_sparse_topk_out(
   dequantize_k_cache_paged_hcu_selected(cache, full_ids, selected, count, output, page_size, fp8_fnuz);
   return count;
 #else
-  TORCH_CHECK(false, "selected dequantization is currently supported on gfx936/gfx938");
+  TORCH_CHECK(false, "selected dequantization is currently supported on gfx936/gfx938/gfx946");
 #endif
 }
 

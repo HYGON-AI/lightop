@@ -19,7 +19,7 @@ constexpr int kMoePerGroupWaveSize = 64;
 constexpr int kMoePerGroupWarpsPerBlock = 2;
 constexpr int kMoePerGroupRoutedTopk = 7;
 
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
 __device__ inline float moe_per_group_exp(float value) {
   constexpr float kLog2E = 1.44269504089f;
   return __builtin_amdgcn_exp2f(value * kLog2E);

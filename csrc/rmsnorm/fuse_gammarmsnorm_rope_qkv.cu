@@ -86,7 +86,7 @@ inline __device__ uint8_t float_to_fp8e4m3(float f) {
 
   inline __device__ uint16_t float_to_fp8e4m3_x2(float a, float b)
 {
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
     // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
     int32_t temp;
     temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);
@@ -101,7 +101,7 @@ inline __device__ uint8_t float_to_fp8e4m3(float f) {
 
 inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
 {
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
     int32_t res;
     res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
     res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
@@ -144,7 +144,7 @@ inline __device__ uint8_t float_to_fp8e5m2(float f) {
 
 inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
 {
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
     int32_t res;
     res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
     res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
@@ -161,7 +161,7 @@ inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float 
 
 inline __device__ uint16_t float_to_fp8e5m2_x2(float a, float b)
 {
-  #if defined(__gfx938__)
+  #if defined(__gfx938__) || defined(__gfx946__)
     // 对于ROCm，可能需要使用不同的内置函数或组合现有函数
     int32_t temp;
     temp = __builtin_hcu_cvt_pk_fp8_f32(a, b, temp, false);

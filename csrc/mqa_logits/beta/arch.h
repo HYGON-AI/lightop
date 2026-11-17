@@ -13,7 +13,7 @@ using F2 = float __attribute__((ext_vector_type(2)));
 using F4 = float __attribute__((ext_vector_type(4)));
 using LdsInt = int __attribute__((address_space(3)));
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__) || defined(__gfx946__)
 // One MLS instruction and its matching DS format. A kernel owns the LDS layout,
 // including how several MLS requests are combined and when their data is ready.
 enum class MLSKind { B8_64x32_T1_F1, B8_128x16_T1_F0, B8_64x16_T1_F0 };

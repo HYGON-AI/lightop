@@ -144,7 +144,7 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
 
   inline __device__ uint32_t float_to_fp8e4m3_x4(float a, float b, float c, float d)
   {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
       int32_t res;
       res = __builtin_hcu_cvt_pk_fp8_f32(a, b, res, false);
       res = __builtin_hcu_cvt_pk_fp8_f32(c, d, res, true);
@@ -160,7 +160,7 @@ AT_DISPATCH_SWITCH(TYPE, NAME, VLLM_DISPATCH_CASE_FLOATING_TYPES(__VA_ARGS__))
   }
   
   inline __device__ float float_to_bf16_to_float(float f) {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
         // HCU gfx938 原生硬件 bf16 转换（最优）
         return float(bhalf_t(f));
     #else
@@ -182,7 +182,7 @@ inline __device__ uint32_t float_to_bhalf_to_fp8e4m3_x4(float a, float b, float 
     float c_bf = float_to_bf16_to_float(c);
     float d_bf = float_to_bf16_to_float(d);
 
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
       int32_t res;
       res = __builtin_hcu_cvt_pk_fp8_f32(a_bf, b_bf, res, false);
       res = __builtin_hcu_cvt_pk_fp8_f32(c_bf, d_bf, res, true);
@@ -200,7 +200,7 @@ inline __device__ uint32_t float_to_bhalf_to_fp8e4m3_x4(float a, float b, float 
   
   inline __device__ uint32_t float_to_fp8e5m2_x4(float a, float b, float c, float d)
   {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
       int32_t res;
       res = __builtin_hcu_cvt_pk_bf8_f32(a, b, res, false);
       res = __builtin_hcu_cvt_pk_bf8_f32(c, d, res, true);
@@ -228,7 +228,7 @@ inline __device__ uint32_t float_to_bhalf_to_fp8e5m2_x4(float a, float b, float 
     float c_bf = float_to_bf16_to_float(c);
     float d_bf = float_to_bf16_to_float(d);
 
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     // gfx938 硬件批量转换 + 打包 fp8e5m2
     int32_t res;
     res = __builtin_hcu_cvt_pk_bf8_f32(a_bf, b_bf, res, false);

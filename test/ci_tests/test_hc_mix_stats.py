@@ -3,7 +3,7 @@
 """Torch correctness and device-only three-way mHC statistics benchmark.
 
 python test/ci_tests/test_hc_mix_stats.py --output /path/to/results
-Requires gfx928, gfx936 or gfx938. Real model weights are optional via --model. --quick checks a
+Requires gfx928, gfx936, gfx938 or gfx946. Real model weights are optional via --model. --quick checks a
 small random matrix; default covers seven weights when --model is supplied.
 CI correctness: python -m pytest -v test/ci_tests/test_hc_mix_stats.py
 """
@@ -21,7 +21,7 @@ import torch
 import torch.nn.functional as F
 import lightop
 
-SUPPORTED_ARCHS = ("gfx928", "gfx936", "gfx938")
+SUPPORTED_ARCHS = ("gfx928", "gfx936", "gfx938", "gfx946")
 K, N, S = 20480, 24, 80
 MS = [0, 1, 2, 10, 12, 15, 16, 17, 48, 128, 256, 512, 1024, 2048]
 
@@ -497,7 +497,7 @@ def test_hc_mix_stats(suite):
         or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
         not in SUPPORTED_ARCHS
     ):
-        pytest.skip("Requires gfx928, gfx936 or gfx938")
+        pytest.skip("Requires gfx928, gfx936, gfx938 or gfx946")
     suite()
 
 
@@ -527,7 +527,7 @@ def main():
         or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
         not in SUPPORTED_ARCHS
     ):
-        raise SystemExit("Requires gfx928, gfx936 or gfx938")
+        raise SystemExit("Requires gfx928, gfx936, gfx938 or gfx946")
     if args.profile:
         x = torch.randn(args.profile_m, K, device="cuda").bfloat16()
         w = torch.randn(N, K, device="cuda") / (K**0.5)

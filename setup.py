@@ -54,6 +54,8 @@ def _get_rocm_arch_flags(cflags: Optional[List[str]] = None) -> List[str]:
         default_archs = 'gfx928;gfx936;gfx938'
         if dtk_ver >= 2610:
             default_archs += ';gfx92a'
+        if dtk_ver >= 2704:
+            default_archs += ';gfx946'
         archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
@@ -68,6 +70,8 @@ def _get_rocm_arch_flags_marlin_w4a8(cflags: Optional[List[str]] = None) -> List
         default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
         if dtk_ver >= 2610:
             default_archs += ';gfx92a'
+        if dtk_ver >= 2704:
+            default_archs += ';gfx946'
         archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')
@@ -84,6 +88,8 @@ def _get_rocm_arch_flags_marlin_w4a16(cflags: Optional[List[str]] = None) -> Lis
         default_archs = 'gfx906;gfx926;gfx928;gfx936;gfx938'
         if dtk_ver >= 2610:
             default_archs += ';gfx92a'
+        if dtk_ver >= 2704:
+            default_archs += ';gfx946'
         archs = os.environ.get('PYTORCH_ROCM_ARCH', default_archs)
     else:
         archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx906;gfx926;gfx928;gfx936')

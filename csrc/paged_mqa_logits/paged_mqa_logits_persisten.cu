@@ -1023,10 +1023,10 @@ torch::Tensor paged_mqa_logits_persisten_impl(
     const bool supported_device =
         (std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
          properties.multiProcessorCount == 80) ||
-        is_supported_gfx938;
+        is_supported_gfx938 || std::strncmp(properties.gcnArchName, "gfx946", 6) == 0;
     TORCH_CHECK(
         supported_device,
-        "grouped persistent MQA requires gfx936/80CU or gfx938/64CU/72CU, got ",
+        "grouped persistent MQA requires gfx936/80CU, gfx938/64CU/72CU or gfx946, got ",
         properties.gcnArchName,
         "/",
         properties.multiProcessorCount,

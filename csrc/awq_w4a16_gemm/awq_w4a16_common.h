@@ -114,7 +114,7 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
 {
   #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
   reg_c = HCU_MMAC_F32_F16(reg_a,reg_b,reg_c);
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
   reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a,reg_b,reg_c, false, false);
   #endif
 }
@@ -124,7 +124,7 @@ inline __device__ void builtin_amdgcn_mmac(const bhalf4_t& reg_a, const bhalf4_t
 {
   #if defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
   reg_c = HCU_MMAC_F32_BF16(reg_a,reg_b,reg_c);
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
   reg_c = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(reg_a,reg_b,reg_c, false, false);
   #endif
 }

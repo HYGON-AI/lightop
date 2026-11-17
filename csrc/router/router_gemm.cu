@@ -12,7 +12,7 @@ using Float4 = float __attribute__((ext_vector_type(4)));
 struct alignas(16) Pack { Short4 low, high; };
 
 __global__ void router_partial(const short* x, const short* weight, float* scratch) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     const int lane = threadIdx.x, group = lane / 16;
     const int row = blockIdx.y * 16 + lane % 16;
     const int expert = blockIdx.x * 16 + lane % 16;
@@ -47,7 +47,7 @@ at::Tensor forward(const at::Tensor& x, const at::Tensor& weight) {
                 (reinterpret_cast<uintptr_t>(weight.data_ptr()) % 16 == 0), "expected 16-byte alignment");
     c10::cuda::CUDAGuard guard(x.device());
     auto arch = at::cuda::getCurrentDeviceProperties()->gcnArchName;
-    TORCH_CHECK(std::strncmp(arch, "gfx938", 6) == 0 && (arch[6] == 0 || arch[6] == ':'), "expected gfx938");
+    TORCH_CHECK((std::strncmp(arch, "gfx938", 6) == 0 || std::strncmp(arch, "gfx946", 6) == 0) && (arch[6] == 0 || arch[6] == ':'), "expected gfx938 or gfx946");
     auto stream = at::cuda::getCurrentCUDAStream();
     auto options = x.options().dtype(at::kFloat);
     auto scratch = at::empty({Parts, Rows, Experts}, options);

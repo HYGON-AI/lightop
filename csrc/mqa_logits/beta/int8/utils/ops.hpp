@@ -21,7 +21,7 @@ using mqa_beta::tail_rows;
 using mqa_beta::TileWindow;
 using mqa_beta::Window;
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 // Public row views guarantee only four-byte alignment, as in FP8.
 // memcpy avoids asserting the stronger C++ vector-pointer alignment.
 template <class Vector, class Scalar>
@@ -49,7 +49,7 @@ __device__ __forceinline__ I2 load_kv_slc(I4 resource, int offset) {
 
 // Signed INT8 MMAC shares the non-LIT layout on gfx936 and gfx938.
 __device__ __forceinline__ void mmac_i8(const I2 &a, const I2 &b, I4 &c) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     c = __builtin_hcu_mmac_i32_16x16x32_i8(a, b, c);
 #endif
 }

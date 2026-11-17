@@ -75,8 +75,8 @@ torch::Tensor mqa_logits_int8(const torch::Tensor &Q, const torch::Tensor &K,
     auto status = hipGetDeviceProperties(&prop, Q.get_device());
     TORCH_CHECK(status == hipSuccess, "mqa_logits: ", hipGetErrorString(status));
     const std::string arch = std::string(prop.gcnArchName).substr(0, 6);
-    TORCH_CHECK((arch == "gfx936" || arch == "gfx938") && prop.warpSize == 64,
-                "mqa_logits beta INT8 requires gfx936/gfx938 with wave64; "
+    TORCH_CHECK((arch == "gfx936" || arch == "gfx938" || arch == "gfx946") && prop.warpSize == 64,
+                "mqa_logits beta INT8 requires gfx936/gfx938/gfx946 with wave64; "
                 "unset LIGHTOP_MQA_LOGITS_BETA "
                 "or set it to 0 to use the original INT8 implementation");
     torch::Tensor result;

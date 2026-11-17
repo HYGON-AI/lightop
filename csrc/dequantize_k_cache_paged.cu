@@ -123,7 +123,7 @@ __device__ __forceinline__ uint32_t decode_scaled_bf16_normal_pair(uint32_t pack
 
 template <bool Fnuz>
 __device__ __forceinline__ uint32_t decode_scaled_bf16_hcu_pair(uint32_t packed, int scale) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   // HCU's packed instruction decodes OCP E4M3 (FN). The probe and exhaustive
   // byte-pair tests also cover the two FNUZ-specific encodings below.
   const auto values = __builtin_hcu_cvt_pk_f32_fp8(packed, 0, 0, 0);
@@ -368,10 +368,11 @@ void dequantize_k_cache_paged_hcu_selected(
   TORCH_CHECK(cache.is_cuda(), "selected dequantization requires a GPU cache");
   const c10::cuda::CUDAGuard guard(cache.device());
 #if defined(__HIP_PLATFORM_AMD__)
-  TORCH_CHECK((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0),
-              "selected dequantization is currently supported on gfx936/gfx938");
+  TORCH_CHECK((std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx936", 6) == 0 || std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx938", 6) == 0 ||
+      std::strncmp(at::cuda::getCurrentDeviceProperties()->gcnArchName, "gfx946", 6) == 0),
+              "selected dequantization is currently supported on gfx936/gfx938/gfx946");
 #else
-  TORCH_CHECK(false, "selected dequantization is currently supported on gfx936/gfx938");
+  TORCH_CHECK(false, "selected dequantization is currently supported on gfx936/gfx938/gfx946");
 #endif
   dequantize_k_cache_paged_hcu_impl(cache, token_ids, output, page_size,
                                   fp8_fnuz, valid_count, selected_rows);

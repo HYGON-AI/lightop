@@ -7,7 +7,7 @@
 #include <limits>
 
 namespace lightop::mqa_int8 {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 template <bool PACK> __device__ __forceinline__ void weighted(const I4 &d, const F4 &w, F4 &a) {
     // Preserve the per-head FMA and the existing head reduction order.
 #pragma unroll

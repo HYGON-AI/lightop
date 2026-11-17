@@ -72,7 +72,7 @@ void swiglu_oai_fp8_quant_contiguous_kernel(
           for (int k = 0; k < 4; ++k)
             q[k] = fminf(448.0f, fmaxf(-448.0f, values[it * Vec + v + k] * inv_scale));
           uint32_t packed = 0;
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
           packed = __builtin_hcu_cvt_pk_fp8_f32(q[0], q[1], packed, false);
           packed = __builtin_hcu_cvt_pk_fp8_f32(q[2], q[3], packed, true);
 #else

@@ -140,7 +140,7 @@ inline __device__ __forceinline__ f16x8_t convert_fp8x8_e4m3fn_to_bf16_flush_sub
     }
 
 inline __device__ void buffer_load_lds_x4(v4i* desc, uint8_t* smem_ptr, int offset) {
-    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx92a__)
+    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
     __builtin_amdgcn_raw_buffer_load_lds(*desc,
                                          // Cast address type to which compiler can recognize as lds type.
                                          *(__attribute__((address_space(3))) int**) (&smem_ptr),
@@ -153,7 +153,7 @@ inline __device__ void buffer_load_lds_x4(v4i* desc, uint8_t* smem_ptr, int offs
 }
 
 inline __device__ void buffer_load_lds_x2(v4i* desc, uint8_t* smem_ptr, int offset) {
-    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx92a__)
+    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__) || defined(__gfx92a__)
     __builtin_amdgcn_raw_buffer_load_lds(*desc,
                                          *(__attribute__((address_space(3))) int**) (&smem_ptr),
                                          DIRECT_LDS_WORDx2,
@@ -181,7 +181,7 @@ inline __device__ __forceinline__ void buffer_load_page_tile_lds(const Element* 
     for (int load_iter = 0; load_iter < kLoadIter; ++load_iter) {
         const int tile_linear_elem = (load_iter * WARP_SIZE_GPU + lane_idx) * kAlignment;
         const int page_linear_elem = row_in_page * kHeadDim + tile_linear_elem;
-        #if defined(__gfx936__) || defined(__gfx938__)
+        #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         auto* lds_ptr = reinterpret_cast<uint8_t*>(smem_tile + load_iter * WARP_SIZE_GPU * kAlignment);
         buffer_load_lds_x4(src, lds_ptr, page_linear_elem * sizeof(Element));
         #else
@@ -214,7 +214,7 @@ inline __device__ __forceinline__ void buffer_load_page_k_stage_lds(const uint8_
 
 template<bool is_half = true>
 inline __device__ void builtin_b16_mmac(const fp16x4& reg_a, const fp16x4& reg_b, fp32x4& reg_c) {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     if constexpr (is_half) {
         reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false);
     } else {
@@ -944,7 +944,7 @@ __global__ void paged_mqa_logits(const Element* q,
         const int seq_kv_tile_offset = cta_seq_kv_offset + cta_tile_idx * KV_TILE;
         const bool valid = seq_kv_tile_offset / BLOCK_KV < num_kv;
 
-        #if defined(__gfx936__) || defined(__gfx938__)
+        #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
         __builtin_amdgcn_sched_barrier(0);
         asm volatile(
             "s_waitcnt vmcnt(0)\n\t"
@@ -1633,7 +1633,7 @@ __global__ void paged_mqa_logits_small_block(const Element* q,
                 const int row_in_tile = subpage * BLOCK_KV + row_in_page;
                 auto smem_ptr = smem_warp_kv_start + row_in_tile * kHeadDim + col_in_page;
                 int inner_warp_offset = current_block_idx != -1 ? page_linear_elem * sizeof(Element) : -1;
-                #if defined(__gfx936__) || defined(__gfx938__)
+                #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 auto lds_ptr = reinterpret_cast<uint8_t *>(
                     smem_warp_kv_start + subpage * BLOCK_KV * kHeadDim +
                     load_iter * WARP_SIZE_GPU * kAlignmentKV);

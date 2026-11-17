@@ -901,7 +901,7 @@ def _use_page_mqa_logits_sparse_mask(
     fp8_fnuz_dtype = getattr(torch, "float8_e4m3fnuz", None)
     if fp8_fnuz_dtype is not None:
         fp8_q_dtypes.add(fp8_fnuz_dtype)
-    supported_device = (arch, num_cus) in (
+    supported_device = arch == "gfx946" or (arch, num_cus) in (
         ("gfx936", 80),
         ("gfx938", 64),
         ("gfx938", 72),
@@ -988,7 +988,7 @@ def page_mqa_logits_sparse_mask(
         raise ValueError(
             "page_mqa_logits_sparse_mask requires a positive batch, heads "
             "8/16/32/64, BF16 or packed FP8 KV, and "
-            "gfx936/80CU or gfx938/64CU with schedule_meta=None")
+            "gfx936/80CU, gfx938/64CU/72CU or gfx946 with schedule_meta=None")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
     # Keep the validated legacy kernel for its tuned shapes. This is a kernel
     # selection, not an input gate; every other supported batch falls through
@@ -1122,10 +1122,10 @@ def page_mqa_logits_sparse_mask_grouped(
             "grouped sparse MQA requires clean_logits=True, num_warps=4 "
             "and max_context_len equal to block-table capacity")
     arch, num_cus = _paged_mqa_device_info(q.device.index)
-    if (arch, num_cus) not in (
+    if arch != "gfx946" and (arch, num_cus) not in (
             ("gfx936", 80), ("gfx938", 64), ("gfx938", 72)):
         raise ValueError(
-            "grouped sparse MQA requires gfx936/80CU or gfx938/64CU/72CU")
+            "grouped sparse MQA requires gfx936/80CU, gfx938/64CU/72CU or gfx946")
     native_op = (
         op.page_mqa_logits_sparse_mask_grouped_int8
         if _int8_kv

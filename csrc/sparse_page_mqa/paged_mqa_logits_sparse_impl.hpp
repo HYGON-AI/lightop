@@ -185,7 +185,7 @@ __global__ void paged_mqa_logits_bf16_sparse_mask_persistent(
                 cta_seq_kv_offset + cta_tile_idx * KV_TILE;
             const bool valid = seq_kv_tile_offset < context_len;
 
-            #if defined(__gfx936__) || defined(__gfx938__)
+            #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
             // Every wave owns a disjoint KV LDS slice.  Waiting for this
             // wave's direct-to-LDS loads is sufficient; a CTA-wide barrier
             // only couples unrelated random page loads across the four waves.

@@ -96,7 +96,7 @@ inline __device__ void builtin_amdgcn_mmac(const int8x8& reg_a, const int8x8& re
         auto a = reinterpret_cast<const long*>(&reg_a);
         auto b = reinterpret_cast<const long*>(&reg_b);
         reg_c=HCU_MMAC_I32_I8(*a, *b, reg_c);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
         const intx2 A = *(reinterpret_cast<const intx2 *>(&reg_a));
         const intx2 B = *(reinterpret_cast<const intx2 *>(&reg_b));

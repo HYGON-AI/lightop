@@ -106,7 +106,7 @@ inline __device__ intx2 amd_assembly_i4_to_inx2(int a)
     uint32_t fp8x4_0;
     uint32_t fp8x4_1;
     float tmp_0, tmp_1, tmp_2;
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     asm volatile("v_cvt_off_f32_i4 %[v_tmp_0], %[v_src]\n"
                  "v_cvt_off_f32_i4 %[v_tmp_1], %[v_src], src0_sel:BYTE_2\n"
                  "v_cvt_pk_fp8_f32 %[v_dst_0], %[v_tmp_0], %[v_tmp_1], %[v_tmp_1]\n"
@@ -369,10 +369,10 @@ __forceinline__ __device__ void buffer_load_lds_dwordx4(const T* ptr, T* lds_ptr
   int smem_offset;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
   #endif  
-  #if (defined(__gfx936__) || defined(__gfx938__))
+  #if (defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
@@ -397,10 +397,10 @@ __forceinline__ __device__ void buffer_load_lds_dwordx1(const T* ptr, T* lds_ptr
   int smem_offset;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
   #endif 
-  #if (defined(__gfx936__) || defined(__gfx938__))
+  #if (defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
@@ -425,11 +425,11 @@ __forceinline__ __device__ void buffer_load_lds_dwordx2(const T* ptr, T* lds_ptr
   int smem_offset;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset = __builtin_amdgcn_readfirstlane(cvta_to_shared(dst_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset = __builtin_hcu_readfirstlane(cvta_to_shared(dst_ptr));
   #endif 
   
-  #if (defined(__gfx936__) || defined(__gfx938__))
+  #if (defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__))
     __builtin_amdgcn_sched_barrier(0);
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
@@ -447,7 +447,7 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   int smem_offset_sgpr;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
   #endif 
   typedef uint32_t uint32x4_t __attribute__((ext_vector_type(4)));
@@ -457,7 +457,7 @@ __device__ inline void amdgcn_buffer_load_dwordx4_lds(void* smem_ptr, const T* g
   global_addr[2] = 0x80000000;
   global_addr[3] = 0x00020000; // 0000 0000 0000 0010 0000 0000 0000 0000
 //   int offset_s = offset_s;
-  #if (defined(__gfx936__) || defined(__gfx938__))
+  #if (defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__))
   __builtin_amdgcn_sched_barrier(0);
   asm volatile(
       "s_mov_b32 m0, %1 \n\t"
@@ -473,10 +473,10 @@ __device__ __forceinline__ void cp_async_buffer_load_dwordx4(void* smem_ptr, uin
   int smem_offset_sgpr;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
   #endif     
-#if (defined(__gfx936__) || defined(__gfx938__))
+#if (defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__))
     asm volatile(
         "s_mov_b32 m0, %1 \n\t"
         "buffer_load_dwordx4 %0, %2, %3, offen  offset:0, lds \n" ::"v"(gvOffset_v),
@@ -519,7 +519,7 @@ __device__ inline void amdgcn_buffer_load_dwordx2_lds(void* smem_ptr, T* glob_pt
   int smem_offset_sgpr;
   #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
     smem_offset_sgpr = __builtin_amdgcn_readfirstlane(cvta_to_shared(smem_ptr));
-  #elif defined(__gfx938__)
+  #elif defined(__gfx938__) || defined(__gfx946__)
     smem_offset_sgpr = __builtin_hcu_readfirstlane(cvta_to_shared(smem_ptr));
   #endif  
   
@@ -620,7 +620,7 @@ __device__ floatx4 mmac(const typename vec<Element, 4>::type &v1, const typename
     floatx4 v4f;
     #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
         v4f = HCU_MMAC_F32_F16(v1, v2, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;
@@ -723,7 +723,7 @@ __device__ typename vec<float, 4>::type mmac<half>(const typename vec<half, 4>::
     floatx4 v4f;
     #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
         v4f = HCU_MMAC_F32_F16(v1, v2, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;
@@ -748,7 +748,7 @@ __device__ floatx4 mmac<bhalf_t>(const typename vec<bhalf_t, 4>::type &v1, const
     floatx4 v4f;
     #if (defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__)))
         v4f = HCU_MMAC_F32_BF16(v1, v2, v3);
-    #elif defined(__gfx938__)
+    #elif defined(__gfx938__) || defined(__gfx946__)
         v4f = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(v1, v2, v3,false,false);
     #endif
     return v4f;

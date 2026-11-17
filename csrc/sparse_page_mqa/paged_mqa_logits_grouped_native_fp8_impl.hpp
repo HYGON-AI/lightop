@@ -40,7 +40,7 @@ __global__ void paged_mqa_logits_grouped_native_fp8_kernel(
     const int persistent_ctas_per_request) {
     static_assert(kGroupedRows == 1 ||
                   (kGroupedRows >= 3 && kGroupedRows <= 6));
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     static_assert(kRowsPerCta >= 1 && kRowsPerCta <= kGroupedRows);
     constexpr int kPairsPerRequest =
         (kGroupedRows + kRowsPerCta - 1) / kRowsPerCta;

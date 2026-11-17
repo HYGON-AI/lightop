@@ -8,7 +8,7 @@
 #include <type_traits>
 
 namespace lightop::mqa_int8 {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 // Four waves share Q fragments while retaining K and head accumulators in
 // registers. Wave w owns columns [w*BN/4, (w+1)*BN/4) of all BM rows.
 //

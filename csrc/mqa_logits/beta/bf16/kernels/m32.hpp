@@ -7,7 +7,7 @@
 #include "../../params.h"
 
 namespace lightop::mqa_bf16 {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 // Common BM16/BM32/BM64 computation; m16.hpp and m64.hpp include this file.
 // Four waves reuse register-resident BF16 K across head groups.
 // Q is staged cooperatively; output is masked and coalesced in this kernel.

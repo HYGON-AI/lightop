@@ -311,8 +311,8 @@ def test_paged_mqa_logits_prefill(chunk, csv_writer=None):
         pytest.skip("A CUDA/ROCm device is required")
     props = torch.cuda.get_device_properties(0)
     arch = getattr(props, 'gcnArchName', props.name).split(':')[0]
-    if arch != 'gfx936':
-        pytest.skip(f'INT8 prefix prefill requires gfx936, got {arch}')
+    if arch not in ('gfx936', 'gfx946'):
+        pytest.skip(f'INT8 prefix prefill requires gfx936 or gfx946, got {arch}')
 
     previous_tf32 = torch.backends.cuda.matmul.allow_tf32
     torch.backends.cuda.matmul.allow_tf32 = False

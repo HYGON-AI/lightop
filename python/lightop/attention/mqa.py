@@ -100,6 +100,8 @@ def _persistent_supported(q, fused_kv_cache, weights, context_lens,
         return False
     props = torch.cuda.get_device_properties(q.device)
     arch = props.gcnArchName.split(":")[0]
+    if arch == "gfx946":
+        return q.dtype == torch.int8 and fused_kv_cache.dtype == torch.int8
     if arch == "gfx936":
         return (props.multi_processor_count == 80
                 and q.dtype == torch.int8
@@ -431,7 +433,7 @@ def supports_prefill_sparse_fusion(tensor):
     if not tensor.is_cuda:
         return False
     arch = torch.cuda.get_device_properties(tensor.device).gcnArchName.split(":")[0]
-    return arch in ("gfx92a", "gfx936", "gfx938")
+    return arch in ("gfx92a", "gfx936", "gfx938", "gfx946")
 
 
 
@@ -449,7 +451,7 @@ def prepare_prefill_sparse_query(q, raw_weights, freqs_cis, positions, rope_dim,
                                 weight_scale, compress_ratio, width, *, query_tile=None, num_warps=4):
     """Native RoPE/FP4 packing, BF16 weight scaling and per-row metadata."""
     if not supports_prefill_sparse_fusion(q):
-        raise ValueError("native sparse fusion requires gfx92a, gfx936 or gfx938")
+        raise ValueError("native sparse fusion requires gfx92a, gfx936, gfx938 or gfx946")
     if query_tile is not None and query_tile not in (1, 2, 4, 8, 16, 32):
         raise ValueError("query_tile must be a power of two <=32")
     return tuple(_native_prefill_fusion_backend().prefill_sparse_native_prepare_query(

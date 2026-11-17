@@ -62,7 +62,7 @@ def weights(model):
 
 def bf_supported(m):
     arch = torch.cuda.get_device_properties(torch.cuda.current_device()).gcnArchName.split(":")[0]
-    return m <= 131072 if arch == "gfx938" else m == 0 or 4096 <= m <= 65536
+    return m <= 131072 if arch in ("gfx938", "gfx946") else m == 0 or 4096 <= m <= 65536
 
 @torch.inference_mode()
 def correctness(args):
@@ -203,8 +203,8 @@ def main():
 def test_compensated_smoke(tmp_path):
     import pytest
     from types import SimpleNamespace
-    if not torch.cuda.is_available() or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] not in ("gfx928", "gfx936", "gfx938"):
-        pytest.skip("native compensated mHC requires gfx928, gfx936 or gfx938")
+    if not torch.cuda.is_available() or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] not in ("gfx928", "gfx936", "gfx938", "gfx946"):
+        pytest.skip("native compensated mHC requires gfx928, gfx936, gfx938 or gfx946")
     torch.backends.cuda.matmul.allow_tf32 = False
     correctness(SimpleNamespace(quick=True, model=None, output=tmp_path))
 
@@ -212,8 +212,8 @@ def test_compensated_smoke(tmp_path):
 def test_compensated_graph_contracts(tmp_path):
     import pytest
     from types import SimpleNamespace
-    if not torch.cuda.is_available() or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] not in ("gfx928", "gfx936", "gfx938"):
-        pytest.skip("native compensated mHC requires gfx928, gfx936 or gfx938")
+    if not torch.cuda.is_available() or torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] not in ("gfx928", "gfx936", "gfx938", "gfx946"):
+        pytest.skip("native compensated mHC requires gfx928, gfx936, gfx938 or gfx946")
     contracts(SimpleNamespace(output=tmp_path))
 
 

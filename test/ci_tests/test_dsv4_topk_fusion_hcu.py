@@ -35,8 +35,8 @@ def reference(ids, indices, lengths, topk, swa_rows):
 class HcuTopKFusionTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not getattr(torch.cuda.get_device_properties(0),'gcnArchName','').startswith(("gfx936","gfx938")):
-            raise unittest.SkipTest("gfx936/gfx938-specific fusion checks")
+        if not getattr(torch.cuda.get_device_properties(0),'gcnArchName','').startswith(("gfx936","gfx938","gfx946")):
+            raise unittest.SkipTest("gfx936/gfx938/gfx946-specific fusion checks")
         torch.set_num_threads(1)
 
     def inputs(self, n, q, width, topk, dtype, noncontiguous=False, empty=False):

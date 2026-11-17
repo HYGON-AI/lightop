@@ -20,10 +20,10 @@ number_cu = torch.cuda.get_device_properties(
 
 LMSLIM_GPU_NAME = f"{device_name}_{number_cu}cu"
 
-if LMSLIM_GPU_NAME not in SUPPORTED_DEVICES:
+if device_name != "gfx946" and LMSLIM_GPU_NAME not in SUPPORTED_DEVICES:
     LMSLIM_GPU_NAME = "gfx936_80cu"
 
-if "gfx936" in LMSLIM_GPU_NAME or "gfx938" in LMSLIM_GPU_NAME:
+if "gfx936" in LMSLIM_GPU_NAME or "gfx938" in LMSLIM_GPU_NAME or device_name == "gfx946":
     LMSLIM_USE_LIGHTOP = int(os.getenv("LMSLIM_USE_LIGHTOP", 1))
 else:
     LMSLIM_USE_LIGHTOP = 0

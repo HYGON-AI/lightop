@@ -36,8 +36,8 @@ def make_cache(page_size, exhaustive=False, padding=0):
 class SelectedDequantTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        if not getattr(torch.cuda.get_device_properties(0),'gcnArchName','').startswith(("gfx936","gfx938")):
-            raise unittest.SkipTest("gfx936/gfx938 only")
+        if not getattr(torch.cuda.get_device_properties(0),'gcnArchName','').startswith(("gfx936","gfx938","gfx946")):
+            raise unittest.SkipTest("gfx936/gfx938/gfx946 only")
         cls.native = _get_workspace_native()
 
     def assert_bits(self, actual, expected):

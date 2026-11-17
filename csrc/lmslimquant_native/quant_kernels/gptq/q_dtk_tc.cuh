@@ -41,7 +41,9 @@ inline __device__ void builtin_amdgcn_mmac(const half4_t& reg_a, const half4_t& 
         //  else
         //     reg_c=__builtin_amdgcn_mmac_f32_16x16x16bf16(*(v4bh*)&reg_a,*(v4bh*)&reg_b,reg_c);
     #endif
-    #if defined(__gfx938__)
+    #if defined(__gfx946__)
+        reg_c = __builtin_hcu_mmac_f32_16x16x16_f16_lit_lts(reg_a, reg_b, reg_c, false, false);
+    #elif defined(__gfx938__)
         __builtin_trap();  // HCU_MMAC_F32_F16 gfx938编译不通过强制终止
     #endif
 

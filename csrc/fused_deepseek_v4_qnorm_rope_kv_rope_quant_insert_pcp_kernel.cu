@@ -247,7 +247,7 @@ __device__ __forceinline__ uint8_t rocm_cvt_float_to_fp8_e4m3_ocp_fallback(
 }
 
 __device__ __forceinline__ uint8_t rocm_cvt_float_to_fp8_e4m3(float val) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   int32_t out = 0;
   out = __builtin_hcu_cvt_pk_fp8_f32(val, val, out, false);
   return static_cast<uint8_t>(out & 0xff);

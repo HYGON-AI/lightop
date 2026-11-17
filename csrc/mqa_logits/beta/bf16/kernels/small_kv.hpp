@@ -6,7 +6,7 @@
 #include "../../params.h"
 
 namespace lightop::mqa_bf16 {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 template <int H, bool Pair>
 __device__ __forceinline__ void weighted(const F4 &dot, const F4 &w, F4 &accum, int lane) {
     // Preserve NaNs from real heads, but exclude padded MMAC columns:

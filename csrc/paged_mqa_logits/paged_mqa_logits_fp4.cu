@@ -57,7 +57,6 @@
 #include <ATen/hip/impl/HIPGuardImplMasqueradingAsCUDA.h>
 #include <hip/hip_runtime.h>
 #include <climits>
-#include <mutex>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -86,36 +85,30 @@ struct Fp4DeviceInfo {
     bool reuse_dense_rows;
 };
 
-const Fp4DeviceInfo& get_fp4_device_info() {
-    static std::once_flag once;
-    static Fp4DeviceInfo info{};
-    std::call_once(once, [] {
-        int device_id = 0;
-        TORCH_CHECK(hipGetDevice(&device_id) == hipSuccess,
-                    "get_paged_mqa_logits_fp4_metadata: failed to get HIP device");
-        hipDeviceProp_t prop;
-        TORCH_CHECK(hipGetDeviceProperties(&prop, device_id) == hipSuccess,
-                    "get_paged_mqa_logits_fp4_metadata: failed to get HIP properties");
-        const std::string arch(prop.gcnArchName);
-        const int cus = prop.multiProcessorCount;
-        info.physical_cus = cus;
-        if (arch.rfind("gfx936", 0) == 0 && cus == 80) {
-            // Long gfx936 walks benefit from eight CTAs per CU; the planner
-            // retains four for short walks and small unpaired batches.
-            info.logical_sms = 640;
-            info.reuse_dense_rows = true;
-        } else if (arch.rfind("gfx938", 0) == 0 && cus == 64) {
-            info.logical_sms = 256;
-            info.reuse_dense_rows = true;
-        } else if (arch.rfind("gfx938", 0) == 0 && cus == 72) {
-            info.logical_sms = 144;
-        } else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && cus == 120) {
-            info.logical_sms = 240;
-        } else {
-            TORCH_CHECK(false, "unsupported device config: ", arch,
-                        ", CU=", cus);
-        }
-    });
+Fp4DeviceInfo get_fp4_device_info() {
+    const auto* prop = at::cuda::getCurrentDeviceProperties();
+    Fp4DeviceInfo info{};
+    const std::string arch(prop->gcnArchName);
+    const int cus = prop->multiProcessorCount;
+    info.physical_cus = cus;
+    if (arch.rfind("gfx936", 0) == 0 && cus == 80) {
+        // Long gfx936 walks benefit from eight CTAs per CU; the planner
+        // retains four for short walks and small unpaired batches.
+        info.logical_sms = 640;
+        info.reuse_dense_rows = true;
+    } else if (arch.rfind("gfx938", 0) == 0 && cus == 64) {
+        info.logical_sms = 256;
+        info.reuse_dense_rows = true;
+    } else if (arch.rfind("gfx938", 0) == 0 && cus == 72) {
+        info.logical_sms = 144;
+    } else if (arch.rfind("gfx946", 0) == 0 && cus > 0) {
+        info.logical_sms = 2 * cus;
+    } else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && cus == 120) {
+        info.logical_sms = 240;
+    } else {
+        TORCH_CHECK(false, "unsupported device config: ", arch,
+                    ", CU=", cus);
+    }
     return info;
 }
 
@@ -374,7 +367,7 @@ __device__ __forceinline__ intx2 fp4_to_fp8(unsigned packed, int delta) {
 }
 
 __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
 #elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
     return HCU_MMAC_F32_BF16(a, b, c);

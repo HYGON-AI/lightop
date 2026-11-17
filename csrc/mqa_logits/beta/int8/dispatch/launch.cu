@@ -11,7 +11,7 @@ namespace lightop::mqa_int8 {
 namespace {
 using Kernel = void (*)(MqaInt8Params);
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 template <int Heads, bool HasBounds, bool CleanLogits>
 Kernel select_m64(const MqaInt8Params &p) {
     if (p.m % 64 == 0) {
@@ -169,7 +169,7 @@ hipError_t launch(const MqaInt8Params &p, const KernelConfig &c, hipStream_t str
         return hipErrorInvalidValue;
     if (!grid.x || !grid.y)
         return hipSuccess;
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     Kernel kernel;
     if (!p.ks && !p.ke) {
         // With no bounds, both cleaning settings have the same all-valid output.

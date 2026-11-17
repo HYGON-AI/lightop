@@ -24,7 +24,7 @@ using F4 = float __attribute__((vector_size(16)));
 __device__ __forceinline__ void mmac(B4 a, B4 b, F4& acc) {
 #if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
   acc = HCU_MMAC_F32_BF16(a, b, acc);
-#elif defined(__gfx938__)
+#elif defined(__gfx938__) || defined(__gfx946__)
   acc = __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, acc, false, false);
 #else
   // Runtime dispatch rejects other architectures before launching.
@@ -35,7 +35,7 @@ __device__ __forceinline__ void mmac(B4 a, B4 b, F4& acc) {
 // gfx938 RNE conversion follows softmax_autograd.cu; earlier gfx use the
 // Torch software conversion. The tensor-core builtin also differs by gfx.
 __device__ __forceinline__ short to_bf16(float value) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
   return __builtin_hcu_cvt_bf16_f32(value, false, false);
 #else
   return at::BFloat16(value).x;
@@ -334,7 +334,7 @@ bool supports_hc_mix_stats(const Tensor& x, const Tensor& w, double eps) {
   // Cached device properties; string_view avoids allocating an architecture name.
   auto arch = std::string_view(at::cuda::getDeviceProperties(x.get_device())->gcnArchName);
   arch = arch.substr(0, arch.find(':'));
-  return arch == "gfx928" || arch == "gfx936" || arch == "gfx938";
+  return arch == "gfx928" || arch == "gfx936" || (arch == "gfx938" || arch == "gfx946");
 }
 }  // namespace hc_mix_detail
 

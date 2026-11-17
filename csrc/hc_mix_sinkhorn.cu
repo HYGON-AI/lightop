@@ -31,7 +31,7 @@ __device__ __forceinline__ float tf32(float v) {
 __device__ __forceinline__ F4 mma(F2 a, F2 b, F4 c) {
 #if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
   return HCU_MMAC_F32_TF32(a, b, c);
-#elif defined(__gfx938__)
+#elif defined(__gfx938__) || defined(__gfx946__)
   return __builtin_hcu_mmac_f32_16x16x8_tf32_lit_lts(a, b, c, false, false);
 #else
   __builtin_trap();
@@ -41,7 +41,7 @@ __device__ __forceinline__ F4 mma(F2 a, F2 b, F4 c) {
 __device__ __forceinline__ F4 mma(B4 a, B4 b, F4 c) {
 #if (defined(__gfx928__) || defined(__gfx92a__)) || defined(__gfx936__)
   return HCU_MMAC_F32_BF16(a, b, c);
-#elif defined(__gfx938__)
+#elif defined(__gfx938__) || defined(__gfx946__)
   return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
 #else
   __builtin_trap();
@@ -321,9 +321,9 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
   auto arch = std::string_view(
       at::cuda::getDeviceProperties(x.get_device())->gcnArchName);
   arch = arch.substr(0, arch.find(':'));
-  TORCH_CHECK(arch == "gfx928" || arch == "gfx936" || arch == "gfx938",
-              "hc mix: native compensated kernels require gfx928, gfx936 or gfx938");
-  TORCH_CHECK(tf || (arch == "gfx938" ? m <= 131072
+  TORCH_CHECK(arch == "gfx928" || arch == "gfx936" || (arch == "gfx938" || arch == "gfx946"),
+              "hc mix: native compensated kernels require gfx928, gfx936 or gfx938/gfx946");
+  TORCH_CHECK(tf || ((arch == "gfx938" || arch == "gfx946") ? m <= 131072
                                       : m == 0 || (m >= 4096 && m <= 65536)),
               "BF16x3 requires M=0..131072 on gfx938 or M=0/4096..65536 on gfx928/gfx936");
   auto opts = x.options().dtype(kFloat);
@@ -334,7 +334,7 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
   // Offline-tuned gfx938 intervals; gfx928/gfx936 use the baseline configuration.
   if (tf) {
     launch<true, 80, 4, 1>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
-  } else if (arch != "gfx938") {
+  } else if (arch != "gfx938" && arch != "gfx946") {
     launch<false, 80, 2, 2>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
   } else if (m <= 32) {
     launch<false, 80, 4, 1>(x, parts, scale, base, iters, rms, eps, pre, post, comb);

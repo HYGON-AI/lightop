@@ -104,8 +104,9 @@ torch::Tensor paged_mqa_logits_prefill(
     const auto property_status = hipGetDeviceProperties(&properties, q.get_device());
     TORCH_CHECK(property_status == hipSuccess, hipGetErrorString(property_status));
     const std::string architecture(properties.gcnArchName);
-    TORCH_CHECK(architecture.substr(0, architecture.find(':')) == "gfx936",
-                "prefix prefill currently supports gfx936 only");
+    const auto arch = architecture.substr(0, architecture.find(':'));
+    TORCH_CHECK(arch == "gfx936" || arch == "gfx946",
+                "prefix prefill requires gfx936 or gfx946");
 
     // No GPU metadata is read on the host. In particular, dispatch and grid
     // never depend on context_lens values, so in-place graph updates are safe.

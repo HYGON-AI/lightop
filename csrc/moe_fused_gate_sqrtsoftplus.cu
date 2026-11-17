@@ -10,7 +10,7 @@
 #include <cuda_runtime.h>
 #include <torch/all.h>
 
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
 constexpr float LOG2_E_VAL = 1.44269504089f;
 __device__ inline float exp_func(float x) {
   return __builtin_amdgcn_exp2f(x * LOG2_E_VAL);

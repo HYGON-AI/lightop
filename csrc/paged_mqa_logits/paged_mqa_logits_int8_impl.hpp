@@ -26,7 +26,7 @@ inline __device__ __forceinline__ void builtin_i8_mmac(const int8x8_t& reg_a, co
     const auto* a = reinterpret_cast<const long*>(&reg_a);
     const auto* b = reinterpret_cast<const long*>(&reg_b);
     reg_c = HCU_MMAC_I32_I8(*a, *b, reg_c);
-#elif defined(__gfx938__)
+#elif defined(__gfx938__) || defined(__gfx946__)
     const auto a = *reinterpret_cast<const intx2*>(&reg_a);
     const auto b = *reinterpret_cast<const intx2*>(&reg_b);
     reg_c = __builtin_hcu_mmac_i32_16x16x32_i8_lit_clamp_lts(a, b, reg_c, false, false, false);
@@ -753,7 +753,7 @@ paged_mqa_logits_int8_small_block(const Element* q, const Element* kv_block, con
             const int row_in_tile = subpage * BLOCK_KV + row_in_page;
             auto smem_ptr = smem_stage_start + row_in_tile * kHeadDim + col_in_page;
             if constexpr (BLOCK_KV == 4) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x2(src, lds_ptr, page_linear);
 #else
@@ -761,7 +761,7 @@ paged_mqa_logits_int8_small_block(const Element* q, const Element* kv_block, con
                 *reinterpret_cast<int8x8_t*>(smem_ptr) = fetched;
 #endif
             } else {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x4(src, lds_ptr, page_linear);
 #else
@@ -793,7 +793,7 @@ paged_mqa_logits_int8_small_block(const Element* q, const Element* kv_block, con
             const int row_in_tile = subpage * BLOCK_KV + row_in_page;
             auto smem_ptr = smem_stage_start + row_in_tile * kHeadDim + col_in_page;
             if constexpr (BLOCK_KV == 4) {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 int inner_warp_offset = current_block_idx != -1 ? page_linear : -1;
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x2(src, lds_ptr, inner_warp_offset);
@@ -805,7 +805,7 @@ paged_mqa_logits_int8_small_block(const Element* q, const Element* kv_block, con
                 *reinterpret_cast<int8x8_t*>(smem_ptr) = fetched;
 #endif
             } else {
-#if defined(__gfx936__) || defined(__gfx938__)
+#if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 int inner_warp_offset = current_block_idx != -1 ? page_linear : -1;
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x4(src, lds_ptr, inner_warp_offset);

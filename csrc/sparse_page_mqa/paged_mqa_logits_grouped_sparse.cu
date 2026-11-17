@@ -422,7 +422,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
             __syncthreads();
         }
         if (row_slot == 0) {
-            #if defined(__gfx936__) || defined(__gfx938__)
+            #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
             __builtin_amdgcn_sched_barrier(0);
             asm volatile("s_waitcnt vmcnt(0)\n\t");
             __builtin_amdgcn_sched_barrier(0);
@@ -610,7 +610,7 @@ __global__ void paged_mqa_logits_grouped_sparse_kernel(
                     __syncthreads();
                 }
                 if (row_slot == 0) {
-                    #if defined(__gfx936__) || defined(__gfx938__)
+                    #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                     __builtin_amdgcn_sched_barrier(0);
                     asm volatile("s_waitcnt vmcnt(0)\n\t");
                     __builtin_amdgcn_sched_barrier(0);
@@ -800,10 +800,10 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
     const bool supported_device =
         (std::strncmp(properties.gcnArchName, "gfx936", 6) == 0 &&
          properties.multiProcessorCount == 80) ||
-        is_supported_gfx938;
+        is_supported_gfx938 || std::strncmp(properties.gcnArchName, "gfx946", 6) == 0;
     TORCH_CHECK(
         supported_device,
-        "grouped-wave sparse MQA requires gfx936/80CU or gfx938/64CU/72CU, got ",
+        "grouped-wave sparse MQA requires gfx936/80CU, gfx938/64CU/72CU or gfx946, got ",
         properties.gcnArchName,
         "/",
         properties.multiProcessorCount,

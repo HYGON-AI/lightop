@@ -9,7 +9,7 @@
 
 namespace lightop::mqa_bf16 {
 namespace {
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
 using Kernel = void (*)(MqaBf16Params);
 
 template <int H, int TN, int Waves, bool Pair, bool HasBounds, bool CleanLogits>
@@ -155,7 +155,7 @@ hipError_t launch(const MqaBf16Params &p, const KernelConfig &c, hipStream_t str
         return hipErrorInvalidValue;
     if (!grid.x || !grid.y)
         return hipSuccess;
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
     Kernel kernel;
     if (!p.ks && !p.ke)
         kernel = select_kernel<false, false>(p, c);

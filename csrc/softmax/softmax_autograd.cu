@@ -156,7 +156,7 @@ static __device__ inline float to_float(scalar_t in){
 template<typename scalar_t>
 static __device__ __forceinline__ void from_float_large(scalar_t &out, float f) {
   if constexpr (std::is_same<scalar_t, uint16_t>::value) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     out = static_cast<uint16_t>(__builtin_hcu_cvt_bf16_f32(f, false, false));
 #else
     from_float(out, f);
@@ -169,7 +169,7 @@ static __device__ __forceinline__ void from_float_large(scalar_t &out, float f) 
 template<typename scalar_t>
 static __device__ __forceinline__ float to_float_large(scalar_t in) {
   if constexpr (std::is_same<scalar_t, uint16_t>::value) {
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     return __builtin_hcu_cvt_f32_bf16(static_cast<short>(in), false, 0, false);
 #else
     return to_float(in);

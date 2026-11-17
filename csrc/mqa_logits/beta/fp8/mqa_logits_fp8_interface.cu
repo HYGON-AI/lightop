@@ -79,8 +79,9 @@ torch::Tensor mqa_logits_fp8(const torch::Tensor &Q, const torch::Tensor &K,
     hipDeviceProp_t prop{};
     auto status = hipGetDeviceProperties(&prop, Q.get_device());
     TORCH_CHECK(status == hipSuccess, "mqa_logits: ", hipGetErrorString(status));
-    TORCH_CHECK(std::string(prop.gcnArchName).substr(0, 6) == "gfx938" && prop.warpSize == 64,
-                "mqa_logits beta FP8 requires gfx938/wave64; unset LIGHTOP_MQA_LOGITS_BETA "
+    const auto arch = std::string(prop.gcnArchName).substr(0, 6);
+    TORCH_CHECK((arch == "gfx938" || arch == "gfx946") && prop.warpSize == 64,
+                "mqa_logits beta FP8 requires gfx938/gfx946 with wave64; unset LIGHTOP_MQA_LOGITS_BETA "
                 "or set it to 0 to use the original FP8 implementation");
     torch::Tensor result;
     if (out.has_value() && out->defined()) {

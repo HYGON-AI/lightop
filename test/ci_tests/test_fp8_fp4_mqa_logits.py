@@ -21,8 +21,8 @@ def logits_op():
     if not torch.cuda.is_available() or torch.version.hip is None:
         pytest.skip("requires a HIP GPU")
     arch = torch.cuda.get_device_properties(0).gcnArchName.split(":")[0]
-    if arch not in ("gfx936", "gfx938"):
-        pytest.skip(f"BF16/FP4 MQA requires gfx936/gfx938, got {arch}")
+    if arch not in ("gfx936", "gfx938", "gfx946"):
+        pytest.skip(f"BF16/FP4 MQA requires gfx936/gfx938/gfx946, got {arch}")
     from lightop.attention import fp8_fp4_mqa_logits
 
     return fp8_fp4_mqa_logits

@@ -50,7 +50,7 @@ inline __device__ __forceinline__ v4u make_mls_128x16_b8_srsrc(const uint8_t* pt
 }
 
 inline __device__ __forceinline__ void matrix_load_128x16_b8_t(uint8_t* shared_addr, const v4u& srsrc) {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     const v4u uniform_srsrc = {static_cast<uint32_t>(__builtin_amdgcn_readfirstlane(srsrc[0])),
                                static_cast<uint32_t>(__builtin_amdgcn_readfirstlane(srsrc[1])),
                                static_cast<uint32_t>(__builtin_amdgcn_readfirstlane(srsrc[2])),
@@ -74,7 +74,7 @@ inline __device__ __forceinline__ void matrix_load_128x16_b8_t(uint8_t* shared_a
 
 inline __device__ __forceinline__ v4i ds_read_matrix_trans_b8(uint8_t* ptr) {
     v4i value = {};
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     const int offset = __builtin_amdgcn_readfirstlane(static_cast<int>(reinterpret_cast<uintptr_t>(ptr)));
     asm volatile("s_add_u32 m0, %1, 0x80000000\n\t"
                  "s_nop 0\n\t"
@@ -91,7 +91,7 @@ inline __device__ __forceinline__ v4i ds_read_matrix_trans_b8(uint8_t* ptr) {
 
 template<bool is_e4m3 = true>
 inline __device__ __forceinline__ void builtin_fp8_mmac(const fp8x8& reg_a, const fp8x8& reg_b, fp32x4& reg_c) {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     if constexpr (is_e4m3) {
         reg_c = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(
             *reinterpret_cast<const intx2*>(&reg_a), *reinterpret_cast<const intx2*>(&reg_b), reg_c, false, false);
@@ -108,7 +108,7 @@ inline __device__ __forceinline__ void builtin_fp8_mmac(const fp8x8& reg_a, cons
 
 template<bool is_e4m3 = true>
 inline __device__ __forceinline__ void builtin_fp8_mmac_mls(const fp8x8& reg_q, const fp8x8& reg_k, fp32x4& reg_c) {
-    #if defined(__gfx938__)
+    #if defined(__gfx938__) || defined(__gfx946__)
     if constexpr (is_e4m3) {
         reg_c = __builtin_hcu_mmac_f32_16x16x32_fp8_fp8_lit_lts(
             *reinterpret_cast<const intx2*>(&reg_q), *reinterpret_cast<const intx2*>(&reg_k), reg_c, true, false);
@@ -590,7 +590,7 @@ __global__ void paged_mqa_logits_fp8_small_block(
             const int row_in_tile = subpage * BLOCK_KV + row_in_page;
             auto smem_ptr = smem_stage_start + row_in_tile * kHeadDim + col_in_page;
             if constexpr (BLOCK_KV == 4) {
-                #if defined(__gfx936__) || defined(__gfx938__)
+                #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x2(src, lds_ptr, page_linear);
                 #else
@@ -598,7 +598,7 @@ __global__ void paged_mqa_logits_fp8_small_block(
                 *reinterpret_cast<fp8x8*>(smem_ptr) = fetched;
                 #endif
             } else {
-                #if defined(__gfx936__) || defined(__gfx938__)
+                #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x4(src, lds_ptr, page_linear);
                 #else
@@ -633,7 +633,7 @@ __global__ void paged_mqa_logits_fp8_small_block(
             const int row_in_tile = subpage * BLOCK_KV + row_in_page;
             auto smem_ptr = smem_stage_start + row_in_tile * kHeadDim + col_in_page;
             if constexpr (BLOCK_KV == 4) {
-                #if defined(__gfx936__) || defined(__gfx938__)
+                #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 int inner_warp_offset = current_block_idx != -1 ? page_linear : -1;
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x2(src, lds_ptr, inner_warp_offset);
@@ -645,7 +645,7 @@ __global__ void paged_mqa_logits_fp8_small_block(
                 *reinterpret_cast<fp8x8*>(smem_ptr) = fetched;
                 #endif
             } else {
-                #if defined(__gfx936__) || defined(__gfx938__)
+                #if defined(__gfx936__) || defined(__gfx938__) || defined(__gfx946__)
                 int inner_warp_offset = current_block_idx != -1 ? page_linear : -1;
                 auto lds_ptr = smem_stage_start + subpage * BLOCK_KV * kHeadDim;
                 buffer_load_lds_x4(src, lds_ptr, inner_warp_offset);

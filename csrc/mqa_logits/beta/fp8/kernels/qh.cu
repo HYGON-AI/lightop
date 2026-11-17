@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 
-#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__)
+#if !defined(__HIP_DEVICE_COMPILE__) || defined(__gfx938__) || defined(__gfx946__)
 #include "small_kv.hpp"
 #include "../dispatch/selectors.hpp"
 #include "../dispatch/static_switch.hpp"

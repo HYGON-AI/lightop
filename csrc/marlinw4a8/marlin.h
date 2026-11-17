@@ -226,7 +226,7 @@ __device__ inline void cp_async_wait_0() {
 #endif
 
 // 938 适配的算子
-#ifdef __gfx938__
+#if defined(__gfx938__) || defined(__gfx946__)
 
 using intx2 = __attribute__((__vector_size__(2 * sizeof(int)))) int;
 

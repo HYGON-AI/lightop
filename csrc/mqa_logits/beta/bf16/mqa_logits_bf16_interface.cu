@@ -55,7 +55,8 @@ torch::optional<torch::Tensor> mqa_logits_bf16(
     const c10::cuda::CUDAGuard guard(Q.device());
     const auto *prop = at::cuda::getDeviceProperties(Q.get_device());
     if ((std::strncmp(prop->gcnArchName, "gfx936", 6) != 0 &&
-         std::strncmp(prop->gcnArchName, "gfx938", 6) != 0) || prop->warpSize != 64)
+         std::strncmp(prop->gcnArchName, "gfx938", 6) != 0 &&
+         std::strncmp(prop->gcnArchName, "gfx946", 6) != 0) || prop->warpSize != 64)
         return torch::nullopt;
     check_tensor(K, Q, at::kBFloat16, "K");
     check_tensor(weights, Q, at::kFloat, "weights");
