@@ -1,6 +1,8 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -16,6 +18,7 @@ def _reference(
     limit: float,
     use_gelu: bool = False,
     smooth_scale: torch.Tensor | None = None,
+    round_silu: bool = True,
 ):
     hidden = input.shape[-1] // 2
     if use_gelu:
@@ -26,7 +29,10 @@ def _reference(
     else:
         gate = input[..., :hidden].clamp(max=limit)
         up = input[..., hidden:].clamp(min=-limit, max=limit)
-        activated = F.silu(gate) * up
+        if round_silu:
+            activated = F.silu(gate) * up
+        else:
+            activated = (F.silu(gate.float()) * up.float()).to(input.dtype)
 
     if smooth_scale is not None:
         activated = activated * smooth_scale.to(dtype=input.dtype)
@@ -37,6 +43,118 @@ def _reference(
     quantized = torch.round(activated.float() / scales)
     quantized = quantized.clamp(-128, 127).to(torch.int8)
     return quantized, scales
+
+
+def _assert_quantized_close(actual, expected):
+    actual_q, actual_scale = actual
+    expected_q, expected_scale = expected
+    for a, b in zip(actual, expected):
+        assert a.shape == b.shape and a.dtype == b.dtype
+    if actual_q.numel():
+        assert (actual_q.to(torch.int16) - expected_q.to(torch.int16)).abs().max() <= 1
+    torch.testing.assert_close(
+        actual_scale, expected_scale, rtol=1.0e-6, atol=1.0e-8
+    )
+
+
+@pytest.fixture
+def silu_and_mul_clamp():
+    if os.environ.get("LIGHTOP_TEST_SGLANG_INTEGRATION") != "1":
+        pytest.skip("set LIGHTOP_TEST_SGLANG_INTEGRATION=1 for SGLang integration")
+    from sglang.kernels.ops.moe.dsv4 import silu_and_mul_clamp
+
+    return silu_and_mul_clamp
+
+
+def test_clamp_quant_activation_exports():
+    from lightop import activation
+
+    assert activation.fuse_silu_mul_clamp_quant is fuse_silu_mul_clamp_quant
+    assert activation.fuse_silu_mul_clamp_quant_ep is fuse_silu_mul_clamp_quant_ep
+    assert "fuse_silu_mul_clamp_quant" in activation.__all__
+    assert "fuse_silu_mul_clamp_quant_ep" in activation.__all__
+
+
+def test_product_rounding_native_capability():
+    from lightop.fuse_silu_mul_quant import is_silu_clamp_product_rounding_available
+
+    assert is_silu_clamp_product_rounding_available()
+
+
+@pytest.mark.parametrize(
+    "rows,hidden",
+    [(0, 2304), (1, 2304), (16, 2304), (4096, 2304), (7, 128), (7, 513)],
+)
+@pytest.mark.parametrize("use_smooth", [False, True])
+def test_product_rounding_matches_torch(rows, hidden, use_smooth):
+    torch.manual_seed(1117)
+    x = torch.randn(rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    if rows:
+        boundaries = torch.tensor(
+            [-12, -10, -0.5, 0, 0.5, 9.5, 10, 12], device=x.device, dtype=x.dtype
+        )
+        x[0, :8] = boundaries
+        x[0, hidden : hidden + 8] = boundaries
+    if rows > 1:
+        x[1].zero_()
+    before = x.clone()
+    smooth = torch.rand(hidden, device=x.device) + 0.5 if use_smooth else None
+    actual = fuse_silu_mul_clamp_quant(
+        x, 10.0, smooth_scale=smooth, round_silu=False
+    )
+    expected = _reference(x, 10.0, smooth_scale=smooth, round_silu=False)
+    assert torch.equal(x, before)
+    _assert_quantized_close(actual, expected)
+
+
+@pytest.mark.parametrize("hidden", [128, 513, 2304])
+@pytest.mark.parametrize("expect_m", [-1, 1, 3, 32])
+@pytest.mark.parametrize("use_smooth", [False, True])
+def test_product_rounding_ep_matches_torch(hidden, expect_m, use_smooth):
+    torch.manual_seed(1118)
+    experts, rows = 4, 9
+    x = torch.randn(experts, rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    before = x.clone()
+    mask = torch.tensor([9, 5, 1, 0], device=x.device, dtype=torch.int32)
+    smooth = torch.rand(hidden, device=x.device) + 0.5 if use_smooth else None
+    q = torch.full((experts, rows, hidden), 99, device=x.device, dtype=torch.int8)
+    scales = torch.full((experts, rows, 1), -1.0, device=x.device)
+    actual = fuse_silu_mul_clamp_quant_ep(
+        x, 10.0, mask, expect_m, q, scales, smooth_scale=smooth, round_silu=False
+    )
+    expected = _reference(x, 10.0, smooth_scale=smooth, round_silu=False)
+    valid = torch.arange(rows, device=x.device)[None, :] < mask[:, None]
+    _assert_quantized_close(
+        tuple(t[valid] for t in actual), tuple(t[valid] for t in expected)
+    )
+    assert torch.equal(x, before)
+    assert actual[0].data_ptr() == q.data_ptr()
+    assert actual[1].data_ptr() == scales.data_ptr()
+    assert torch.all(q[~valid] == 99)
+    assert torch.all(scales[~valid] == -1.0)
+    dispatched = fuse_silu_mul_clamp_quant(
+        x, 10.0, mask_m=mask, expect_m=expect_m,
+        smooth_scale=smooth, round_silu=False,
+    )
+    for a, b in zip(dispatched, actual):
+        assert torch.equal(a[valid], b[valid])
+
+
+def test_product_rounding_graph_replay_matches_torch():
+    x = torch.randn(16, 4608, device="cuda", dtype=torch.bfloat16)
+    fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    pointers = [t.data_ptr() for t in actual]
+    for repeat in range(3):
+        x.normal_().mul_(4)
+        x[repeat].zero_()
+        before = x.clone()
+        graph.replay()
+        _assert_quantized_close(actual, _reference(x, 10.0, round_silu=False))
+        assert torch.equal(x, before)
+        assert pointers == [t.data_ptr() for t in actual]
 
 
 @pytest.mark.parametrize("tokens", [1, 8])
@@ -72,6 +190,104 @@ def test_fuse_silu_mul_clamp_quant_glm_shapes(tokens, hidden, use_gelu):
     torch.testing.assert_close(
         actual_scale, expected_scale, rtol=1.0e-6, atol=1.0e-8
     )
+
+
+@pytest.mark.parametrize(
+    "rows,hidden", [(0, 2304), (1, 2304), (16, 2304), (4096, 2304), (7, 128)]
+)
+def test_product_rounding_matches_sglang_clamp_then_native_int8(
+    rows, hidden, silu_and_mul_clamp
+):
+    from lightop.quant import per_token_quant_int8
+    torch.manual_seed(1117)
+    x = torch.randn(rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    if rows:
+        boundaries = torch.tensor(
+            [-12, -10, -0.5, 0, 0.5, 9.5, 10, 12], device=x.device, dtype=x.dtype
+        )
+        x[0, :8] = boundaries
+        x[0, hidden : hidden + 8] = boundaries
+    source = x.clone()
+    ref = x.new_empty((rows, hidden))
+    if rows:
+        silu_and_mul_clamp(x, ref, 10.0)
+        expected = per_token_quant_int8(ref)
+    else:
+        expected = (
+            torch.empty((0, hidden), device=x.device, dtype=torch.int8),
+            torch.empty((0, 1), device=x.device, dtype=torch.float32),
+        )
+    actual = fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    assert torch.equal(x, source)
+    for a, b in zip(actual, expected):
+        assert a.shape == b.shape and a.dtype == b.dtype
+        assert torch.equal(
+            a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8)
+        )
+
+
+def test_product_rounding_graph_replay_reads_changed_input(silu_and_mul_clamp):
+    from lightop.quant import per_token_quant_int8
+    x = torch.randn(16, 4608, device="cuda", dtype=torch.bfloat16)
+    fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    ref = x.new_empty((16, 2304))
+    silu_and_mul_clamp(x, ref, 10.0)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    pointers = [t.data_ptr() for t in actual]
+    for repeat in range(3):
+        x.normal_()
+        x[repeat].zero_()
+        before = x.clone()
+        graph.replay()
+        silu_and_mul_clamp(x, ref, 10.0)
+        expected = per_token_quant_int8(ref)
+        assert torch.equal(x, before)
+        assert pointers == [t.data_ptr() for t in actual]
+        for a, b in zip(actual, expected):
+            assert torch.equal(
+                a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8)
+            )
+
+
+@pytest.mark.parametrize("expect_m", [-1, 1, 3, 32])
+@pytest.mark.parametrize("use_smooth", [False, True])
+def test_product_rounding_ep_matches_sglang_with_mask(
+    expect_m, use_smooth, silu_and_mul_clamp
+):
+    from lightop.quant import per_token_quant_int8
+    torch.manual_seed(1118)
+    experts, rows, hidden = 4, 9, 2304
+    x = torch.randn(experts, rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    before = x.clone()
+    mask = torch.tensor([9, 5, 1, 0], device=x.device, dtype=torch.int32)
+    smooth = torch.rand(hidden, device=x.device) + 0.5 if use_smooth else None
+    ref = x.new_empty((experts * rows, hidden))
+    silu_and_mul_clamp(x.reshape(experts * rows, 2 * hidden), ref, 10.0)
+    if smooth is not None:
+        ref = ref * smooth.to(dtype=x.dtype)
+    expected = per_token_quant_int8(ref.reshape(experts, rows, hidden))
+    q = torch.full((experts, rows, hidden), 99, device=x.device, dtype=torch.int8)
+    scales = torch.full((experts, rows, 1), -1.0, device=x.device)
+    actual = fuse_silu_mul_clamp_quant_ep(
+        x,
+        10.0,
+        mask,
+        expect_m,
+        q,
+        scales,
+        smooth_scale=smooth,
+        round_silu=False,
+    )
+    valid = torch.arange(rows, device=x.device)[None, :] < mask[:, None]
+    assert torch.equal(x, before)
+    assert actual[0].data_ptr() == q.data_ptr()
+    assert actual[1].data_ptr() == scales.data_ptr()
+    for a, b in zip(actual, expected):
+        assert torch.equal(a[valid].view(torch.uint8), b[valid].view(torch.uint8))
+    assert torch.all(q[~valid] == 99)
+    assert torch.all(scales[~valid] == -1.0)
 
 
 def test_fuse_silu_mul_clamp_quant_zero_row_scale():
