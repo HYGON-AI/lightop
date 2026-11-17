@@ -74,6 +74,124 @@ def test_fuse_silu_mul_clamp_quant_glm_shapes(tokens, hidden, use_gelu):
     )
 
 
+@pytest.mark.parametrize(
+    "rows,hidden", [(0, 2304), (1, 2304), (16, 2304), (4096, 2304), (7, 128)]
+)
+def test_product_rounding_matches_sglang_clamp_then_native_int8(rows, hidden):
+    from lightop.fuse_silu_mul_quant import is_silu_clamp_product_rounding_available
+    from lightop.quant import per_token_quant_int8
+
+    silu_and_mul_clamp = pytest.importorskip(
+        "sglang.kernels.ops.moe.dsv4", reason="optional SGLang integration"
+    ).silu_and_mul_clamp
+
+    if not is_silu_clamp_product_rounding_available():
+        pytest.skip("requires the native product-rounding entry point")
+    torch.manual_seed(1117)
+    x = torch.randn(rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    if rows:
+        boundaries = torch.tensor(
+            [-12, -10, -0.5, 0, 0.5, 9.5, 10, 12], device=x.device, dtype=x.dtype
+        )
+        x[0, :8] = boundaries
+        x[0, hidden : hidden + 8] = boundaries
+    source = x.clone()
+    ref = x.new_empty((rows, hidden))
+    if rows:
+        silu_and_mul_clamp(x, ref, 10.0)
+        expected = per_token_quant_int8(ref)
+    else:
+        expected = (
+            torch.empty((0, hidden), device=x.device, dtype=torch.int8),
+            torch.empty((0, 1), device=x.device, dtype=torch.float32),
+        )
+    actual = fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    assert torch.equal(x, source)
+    for a, b in zip(actual, expected):
+        assert a.shape == b.shape and a.dtype == b.dtype
+        assert torch.equal(
+            a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8)
+        )
+
+
+def test_product_rounding_graph_replay_reads_changed_input():
+    from lightop.fuse_silu_mul_quant import is_silu_clamp_product_rounding_available
+    from lightop.quant import per_token_quant_int8
+
+    silu_and_mul_clamp = pytest.importorskip(
+        "sglang.kernels.ops.moe.dsv4", reason="optional SGLang integration"
+    ).silu_and_mul_clamp
+
+    if not is_silu_clamp_product_rounding_available():
+        pytest.skip("requires the native product-rounding entry point")
+    x = torch.randn(16, 4608, device="cuda", dtype=torch.bfloat16)
+    fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    ref = x.new_empty((16, 2304))
+    silu_and_mul_clamp(x, ref, 10.0)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = fuse_silu_mul_clamp_quant(x, 10.0, round_silu=False)
+    pointers = [t.data_ptr() for t in actual]
+    for repeat in range(3):
+        x.normal_()
+        x[repeat].zero_()
+        before = x.clone()
+        graph.replay()
+        silu_and_mul_clamp(x, ref, 10.0)
+        expected = per_token_quant_int8(ref)
+        assert torch.equal(x, before)
+        assert pointers == [t.data_ptr() for t in actual]
+        for a, b in zip(actual, expected):
+            assert torch.equal(
+                a.contiguous().view(torch.uint8), b.contiguous().view(torch.uint8)
+            )
+
+
+@pytest.mark.parametrize("expect_m", [-1, 1, 3, 32])
+@pytest.mark.parametrize("use_smooth", [False, True])
+def test_product_rounding_ep_matches_sglang_with_mask(expect_m, use_smooth):
+    from lightop.fuse_silu_mul_quant import is_silu_clamp_product_rounding_available
+    from lightop.quant import per_token_quant_int8
+
+    silu_and_mul_clamp = pytest.importorskip(
+        "sglang.kernels.ops.moe.dsv4", reason="optional SGLang integration"
+    ).silu_and_mul_clamp
+
+    if not is_silu_clamp_product_rounding_available():
+        pytest.skip("requires the native product-rounding entry point")
+    torch.manual_seed(1118)
+    experts, rows, hidden = 4, 9, 2304
+    x = torch.randn(experts, rows, 2 * hidden, device="cuda", dtype=torch.bfloat16) * 4
+    before = x.clone()
+    mask = torch.tensor([9, 5, 1, 0], device=x.device, dtype=torch.int32)
+    smooth = torch.rand(hidden, device=x.device) + 0.5 if use_smooth else None
+    ref = x.new_empty((experts * rows, hidden))
+    silu_and_mul_clamp(x.reshape(experts * rows, 2 * hidden), ref, 10.0)
+    if smooth is not None:
+        ref = ref * smooth.to(dtype=x.dtype)
+    expected = per_token_quant_int8(ref.reshape(experts, rows, hidden))
+    q = torch.full((experts, rows, hidden), 99, device=x.device, dtype=torch.int8)
+    scales = torch.full((experts, rows, 1), -1.0, device=x.device)
+    actual = fuse_silu_mul_clamp_quant_ep(
+        x,
+        10.0,
+        mask,
+        expect_m,
+        q,
+        scales,
+        smooth_scale=smooth,
+        round_silu=False,
+    )
+    valid = torch.arange(rows, device=x.device)[None, :] < mask[:, None]
+    assert torch.equal(x, before)
+    assert actual[0].data_ptr() == q.data_ptr()
+    assert actual[1].data_ptr() == scales.data_ptr()
+    for a, b in zip(actual, expected):
+        assert torch.equal(a[valid].view(torch.uint8), b[valid].view(torch.uint8))
+    assert torch.all(q[~valid] == 99)
+    assert torch.all(scales[~valid] == -1.0)
+
+
 def test_fuse_silu_mul_clamp_quant_zero_row_scale():
     input = torch.zeros((1, 4096), device="cuda", dtype=torch.bfloat16)
 
