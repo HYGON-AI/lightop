@@ -8,9 +8,16 @@ from . import op
 import functools
 import os
 import math
-from .config_smooth_gemm import gemm_w8a8_smooth_config
+from .config_smooth_gemm import (
+    _W8A8_SMOOTH_GFX936_CACHED_ALGOS,
+    gemm_w8a8_smooth_config,
+)
 from .config_deepgemm import gemm_w8a8_deepgemm_masked_config
 from .config import get_awq_w4a16_gemm_marlin_config
+
+
+_int8_blaslt_scaled_mm = getattr(
+    op, "_lmslimquant_blaslt_w8a8_bf16_gemm_cached", None)
 
 
 @functools.lru_cache(maxsize=128)
@@ -82,9 +89,58 @@ def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
         return False, None
     assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
+    # Diagnostic isolation: preserve every other optimized GEMM route.
+    if (m, k, n) == (32, 2304, 5120):
+        if not getattr(gemm_w8a8_smooth, "_m32_bypass_reported", False):
+            print("[LightOp M32 ASM bypass] pid=%d M=32 K=2304 N=5120 -> Triton fallback" % os.getpid(), flush=True)
+            gemm_w8a8_smooth._m32_bypass_reported = True
+        return False, None
     use_gemm_w8s8_smooth_print = os.getenv("LIGHTOP_GEMM_W8A8_SMOOTH_PRINT", "0")
     if use_gemm_w8s8_smooth_print == "1":
         print(f"[LIGHTOP] gemm_w8a8_smooth: m={m}, n={n}, k={k}, scale_a.shape={scale_a.shape}, scale_b.shape={scale_b.shape}, bias={bias}, out_dtype={out_dtype}")
+    # The native plan cache validates layout, scales and hardware once per call.
+    if _int8_blaslt_scaled_mm is not None and out_dtype == torch.bfloat16 and bias is None:
+        cached_algo = _W8A8_SMOOTH_GFX936_CACHED_ALGOS.get((m, k, n))
+        if cached_algo is not None and os.getenv("HIPBLASLT_TENSILE_LIBPATH"):
+            output = _int8_blaslt_scaled_mm(a, b, scale_a, scale_b, cached_algo)
+            if output is not None:
+                return True, output
+
+    # Only the measured gfx936/80CU prefill shapes use the fused BLASLt path.
+    if (m in (4046, 4096)
+            and (k, n) in ((1280, 32768), (8192, 5120), (5120, 4608),
+                           (6144, 25600), (5120, 1792), (1280, 4096))
+            and out_dtype == torch.bfloat16 and bias is None
+            and a.is_cuda and a.dtype == torch.int8 and b.dtype == torch.int8
+            and b.device == a.device and b.stride() == (1, k)
+            and scale_a.dtype == torch.float32 and scale_b.dtype == torch.float32
+            and scale_a.shape == (m, 1) and scale_b.shape == (n, 1)
+            and scale_a.is_contiguous() and scale_b.is_contiguous()
+            and scale_a.device == a.device and scale_b.device == a.device):
+        properties = torch.cuda.get_device_properties(a.device)
+        if (getattr(properties, "gcnArchName", "").split(":")[0] == "gfx936"
+                and properties.multi_processor_count == 80):
+            if (os.getenv("HIPBLASLT_TENSILE_LIBPATH")
+                    and hasattr(op, "_lmslimquant_blaslt_w8a8_bf16_gemm")
+                    and not (m == 4046 and (k, n) in ((8192, 5120), (6144, 25600)))):
+                with torch.cuda.device(a.device):
+                    output = torch.empty((m, n), device=a.device, dtype=out_dtype)
+                    # The existing INT32-accumulating binding requires host INT32 scalars.
+                    alpha = torch.tensor([1], dtype=torch.int32, device="cpu")
+                    beta = torch.tensor([0], dtype=torch.int32, device="cpu")
+                    op._lmslimquant_blaslt_w8a8_bf16_gemm(
+                        b, a, scale_b, scale_a, output, m, n, k, 1, "TN",
+                        alpha, beta, None)
+                return True, output
+            # Preserve the previous short-K tile when BLASLt is not configured.
+            if k == 1280 and n == 32768:
+                from ._lmslim_native.layers.gemm.int8_utils import matmul_int8
+                config = {"BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256,
+                          "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8, "SPLIT_K": 1,
+                          "num_stages": 1, "num_warps": 8}
+                with torch.cuda.device(a.device):
+                    return True, matmul_int8(a, scale_a, b, scale_b, out_dtype, config)
+
     if m<=16:
         warps, nperblock, kperwarp, splitk, use_n_warps,status = w8a8_smooth_quant_config(m, n, k)
         if status is True:
