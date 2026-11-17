@@ -63,7 +63,7 @@ namespace marlin_moe_w4a16{
     // For both fp16 and bf16, scale and zero point should be fp16 to reuse existing logic
     using FragS = Vec<__half2, 1>;
     using FragZP = Vec<__half2, 4>;
-    # ifdef __gfx936__
+    # if defined(__gfx936__)
       constexpr int gridx = 80*3;
     # else
       constexpr int gridx = 120*3;
