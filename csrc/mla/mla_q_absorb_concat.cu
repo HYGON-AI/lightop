@@ -31,6 +31,8 @@ struct alignas(16) BFloat16x8 {
 __device__ __forceinline__ Float4 mma_bf16(BFloat16x4 a, BFloat16x4 b, Float4 c) {
 #if defined(__gfx936__)
     return __builtin_amdgcn_mmac_f32_16x16x16bf16(a, b, c);
+#elif defined(__gfx946__)
+    return __builtin_hcu_mmac_f32_16x16x16_bf16_lit_lts(a, b, c, false, false);
 #else
     return c;
 #endif
@@ -270,9 +272,9 @@ torch::Tensor mla_q_absorb_rope_concat_impl(torch::Tensor x, torch::Tensor w, to
                     reinterpret_cast<uintptr_t>(w.data_ptr()) % 16 == 0,
                 "MLA BMM requires aligned tensors");
     c10::cuda::CUDAGuard guard(x.device());
-    TORCH_CHECK(
-        std::strncmp(at::cuda::getDeviceProperties(x.get_device())->gcnArchName, "gfx936", 6) == 0,
-        "MLA BMM is validated on gfx936");
+    const char* arch = at::cuda::getDeviceProperties(x.get_device())->gcnArchName;
+    TORCH_CHECK(std::strncmp(arch, "gfx936", 6) == 0 || std::strncmp(arch, "gfx946", 6) == 0,
+                "MLA BMM requires gfx936 or gfx946");
     TORCH_CHECK(q_pe.device() == x.device() && q_pe.scalar_type() == at::kBFloat16 &&
                     q_pe.sizes() == at::IntArrayRef({x.size(0), 128, 64}),
                 "Q-absorb concat requires BF16 rope columns [M,128,64] on the same HCU");

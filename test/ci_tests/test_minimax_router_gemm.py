@@ -1,18 +1,18 @@
-"""BF16 MiniMax router projection on gfx938."""
+"""BF16 MiniMax router projection on gfx938 and gfx946."""
 
 import pytest
 import torch
 
 
-def on_gfx938():
+def on_supported_device():
     return (
         torch.version.hip is not None
         and torch.cuda.is_available()
-        and torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] == "gfx938"
+        and torch.cuda.get_device_properties(0).gcnArchName.split(":")[0] in ("gfx938", "gfx946")
     )
 
 
-pytestmark = pytest.mark.skipif(not on_gfx938(), reason="requires gfx938")
+pytestmark = pytest.mark.skipif(not on_supported_device(), reason="requires gfx938 or gfx946")
 
 
 def test_router_graph_with_changed_inputs():

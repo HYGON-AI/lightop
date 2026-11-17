@@ -11,8 +11,8 @@ def require_hcu():
     if not torch.cuda.is_available():
         pytest.skip("requires HCU")
     arch = getattr(torch.cuda.get_device_properties(0), "gcnArchName", "")
-    if arch.split(":")[0] != "gfx936":
-        pytest.skip("validated on gfx936")
+    if arch.split(":")[0] not in ("gfx936", "gfx946"):
+        pytest.skip("requires gfx936 or gfx946")
 
 
 def rotate(x, cache, positions, neox):
