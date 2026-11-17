@@ -1174,6 +1174,13 @@ void mimo_v2_split_rope_vscale_kv_store(
 }
 
 
+namespace lightop_int8_blaslt {
+std::optional<torch::Tensor> scaled_mm(
+    const torch::Tensor& input, const torch::Tensor& weight,
+    const torch::Tensor& scale_input, const torch::Tensor& scale_weight,
+    int solution);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fill_swa_ring_mapping", &lightop::dsv41::fill_swa_ring_mapping,
         py::arg("mapping"), py::arg("requests"), py::arg("prefixes"),
@@ -1235,6 +1242,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("scale_b"), py::arg("output"), py::arg("m"), py::arg("n"),
         py::arg("k"), py::arg("batch"), py::arg("transpose_flag"),
         py::arg("alpha"), py::arg("beta"), py::arg("bias") = py::none());
+  m.def("_lmslimquant_blaslt_w8a8_bf16_gemm_cached",
+        &lightop_int8_blaslt::scaled_mm,
+        py::arg("input"), py::arg("weight"), py::arg("scale_input"),
+        py::arg("scale_weight"), py::arg("solution"));
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("layernorm_mixed_fp32_params_forward_autograd", &at::native::fuse_layernorm_mixed_fp32_params_autograd,
         "layernorm forward, activations half/bf16 and weight/bias float32");

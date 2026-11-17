@@ -582,6 +582,7 @@ def get_extensions():
         ('lmslimquant_native', '*.cpp'),
         ('lmslimquant_native/awq', '*.cu'),
         ('lmslimquant_native/gptq', '*.cu'),
+        ('lmslimquant_native/hipblaslt', '*.cu'),
         ('lmslimquant_native/smoothquant', '*.cpp'),
         ('lmslimquant_native/torch_bridge', '*.cu'),
         ('moe_gemm/w16a16', '*.cu'),
