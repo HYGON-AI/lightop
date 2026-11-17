@@ -3,6 +3,10 @@
 
 """Activation, gating, dropout and drop-path APIs."""
 
+from ..fuse_silu_mul_quant import (
+    fuse_silu_mul_clamp_quant,
+    fuse_silu_mul_clamp_quant_ep,
+)
 from ..swiglu_oai_fp8_quant_contiguous import swiglu_oai_fp8_quant_contiguous
 
 from importlib import import_module
@@ -55,6 +59,8 @@ __all__ = [
     "DropPath",
     "fuse_silu_and_mul",
     "fuse_silu_and_mul_ep",
+    "fuse_silu_mul_clamp_quant",
+    "fuse_silu_mul_clamp_quant_ep",
     "fuse_silu_mul_fp8_quant",
     "fuse_silu_mul_fp8_quant_ep",
     "fuse_silu_mul_per_token_quant",
