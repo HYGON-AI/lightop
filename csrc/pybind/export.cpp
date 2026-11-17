@@ -1452,6 +1452,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("epsilon"), py::arg("residual"), py::arg("update_input"),
         py::arg("fp8type"), py::arg("norm_output") = py::none());
   m.attr("RMS_NORM_FP8_QUANT_VERSION") = 2;
+  // BF16 contiguous E4M3, update_input=true, without norm_output: FP32
+  // residual sum and the unfused RMSNorm + per_token_quant_fp8 contract.
+  m.attr("RMS_NORM_FP8_FP32_RESIDUAL_WIDTHS") = py::make_tuple(2048, 6144);
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.attr("ROTARY_EMBEDDING_BF16_ROUNDED_OUT_ABI") = 2;
   m.def("rotary_embedding_deepseek_fuse",

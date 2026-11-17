@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdio.h>
 #include <cmath>
+#include <type_traits>
 
 #include <ATen/ATen.h>
 #include <ATen/AccumulateType.h>
@@ -236,7 +237,8 @@ struct min_scaling_factor<int8_t> {
 
     template <typename scalar_t, typename scalar_out_t, typename T_ACC,
               int Vec = 4, int block_size = 512, bool inpit_update = false,
-              bool IS_GEMMA = false, bool WRITE_NORM = false>
+              bool IS_GEMMA = false, bool WRITE_NORM = false,
+              bool MATCH_PER_TOKEN = false>
     __global__ void
     rms_norm_fp8_quant_(scalar_t *input, scalar_t *residual, scalar_t *gamma,
                         int32_t const cols, float const eps, scalar_out_t *out,
@@ -294,15 +296,26 @@ struct min_scaling_factor<int8_t> {
         fp8type_max_v = quant_type_max_v<c10::Float8_e5m2>;   
         min_scaling = min_scaling_factor<c10::Float8_e5m2>::val();
     }
-    float scale = 0.0f;
-    if(tid == 0){
-        scale = fmaxf(block_absmax_val_maybe / fp8type_max_v, min_scaling); 
-        s_token_scale = scale; 
-        scales[bid] = scale; 
+    if (tid == 0) {
+      if constexpr (MATCH_PER_TOKEN) {
+        // Match per_token_quant_fp8 after BF16 normalization, including zero
+        // and tiny rows. Do not introduce the legacy fused scale floor.
+        s_token_scale = block_absmax_val_maybe;
+        scales[bid] = block_absmax_val_maybe / fp8type_max_v;
+      } else {
+        const float scale = fmaxf(block_absmax_val_maybe / fp8type_max_v,
+                                  min_scaling);
+        s_token_scale = scale;
+        scales[bid] = scale;
+      }
     }
     __syncthreads();
-
-    float inv_s = 1.0f / s_token_scale;
+    float inv_s;
+    if constexpr (MATCH_PER_TOKEN) {
+      inv_s = s_token_scale == 0.f ? 0.f : fp8type_max_v / s_token_scale;
+    } else {
+      inv_s = 1.0f / s_token_scale;
+    }
 
     scalar_out_t out_vec[Vec];
     int loop = Vec / 4;
@@ -385,7 +398,7 @@ __global__ void rms_norm_fp8_quant_loop(scalar_t* input,scalar_t* residual,scala
 }
 
 
-template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512,bool inpit_update=false, bool IS_GEMMA=false>
+template <typename scalar_t,typename scalar_out_t,typename T_ACC,int Vec=4,int block_size=512,bool inpit_update=false, bool IS_GEMMA=false, bool MATCH_PER_TOKEN=false>
 __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,scalar_t* gamma,int cols,float const eps, scalar_out_t* out,float* scales, int stride, int fp8type, int num_tokens)
 {
   constexpr int share_size=block_size/C10_WARP_SIZE;
@@ -401,6 +414,7 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
   for(; bid < num_tokens; bid += gridDim.x){
     scalar_t intput_vec[Vec];
     scalar_t residual_vec[Vec];
+    T_ACC summed_vec[Vec];
     T_ACC val = 0;
     T_ACC trstd;
     int64_t idx = bid * tcol + tid;
@@ -411,8 +425,16 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
 
         #pragma unroll
         for (int ii = 0; ii < Vec; ii++) {
-          residual_vec[ii] += (intput_vec[ii]);  
-            val += static_cast<T_ACC>(residual_vec[ii])*static_cast<T_ACC>(residual_vec[ii]);
+          if constexpr (MATCH_PER_TOKEN) {
+            // Normalize the FP32 sum; only the stored residual rounds to BF16.
+            summed_vec[ii] = static_cast<T_ACC>(residual_vec[ii]) +
+                             static_cast<T_ACC>(intput_vec[ii]);
+            residual_vec[ii] = static_cast<scalar_t>(summed_vec[ii]);
+          } else {
+            residual_vec[ii] += intput_vec[ii];
+            summed_vec[ii] = static_cast<T_ACC>(residual_vec[ii]);
+          }
+          val += summed_vec[ii] * summed_vec[ii];
         }
     }
 
@@ -429,7 +451,7 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
           int jj=tid * Vec + ii;
           T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
           if constexpr (IS_GEMMA) { w_val += static_cast<T_ACC>(1.0f); }
-          elem[ii] = static_cast<T_ACC>(residual_vec[ii]) * trstd * w_val;
+          elem[ii] = summed_vec[ii] * trstd * w_val;
           block_absmax_val_maybe = fmaxf(block_absmax_val_maybe,fabs(elem[ii]));
         }      
     }
@@ -446,15 +468,27 @@ __global__ void rms_norm_fp8_quant_residual(scalar_t* input,scalar_t* residual,s
         fp8type_max_v = quant_type_max_v<c10::Float8_e5m2>;   
         min_scaling = min_scaling_factor<c10::Float8_e5m2>::val();
     }
-    float scale = 0.0f;
-    if(tid == 0){
-        scale = fmaxf(block_absmax_val_maybe / fp8type_max_v, min_scaling); 
-        s_token_scale = scale; 
-        scales[bid] = scale; 
+    if (tid == 0) {
+      if constexpr (MATCH_PER_TOKEN) {
+        // Match per_token_quant_fp8 after BF16 normalization, including zero
+        // and tiny rows. Do not introduce the legacy fused scale floor.
+        s_token_scale = block_absmax_val_maybe;
+        scales[bid] = block_absmax_val_maybe / fp8type_max_v;
+      } else {
+        const float scale = fmaxf(block_absmax_val_maybe / fp8type_max_v,
+                                  min_scaling);
+        s_token_scale = scale;
+        scales[bid] = scale;
+      }
     }
     __syncthreads();
-    float inv_s = 1.0f / s_token_scale;
-    
+    float inv_s;
+    if constexpr (MATCH_PER_TOKEN) {
+      inv_s = s_token_scale == 0.f ? 0.f : fp8type_max_v / s_token_scale;
+    } else {
+      inv_s = 1.0f / s_token_scale;
+    }
+
     scalar_out_t out_vec[Vec];
     int loop = Vec / 4;
     if (tid < tcol) {
@@ -586,6 +620,41 @@ void fuse_rms_norm_fp8_quant(
 
           auto dispatch_input_update = [&](auto input_update_tag) {
               constexpr bool update_input = decltype(input_update_tag)::value;
+              // SGLang consumes the updated BF16 activation and E4M3 payload
+              // together. Match its unfused Vec=8 reduction for these widths.
+              // Keep Gemma, FP16, E5M2 and norm_output on their existing paths.
+              if constexpr (!IS_GEMMA && update_input &&
+                            std::is_same_v<scalar_in_t, at::BFloat16>) {
+                  if (fp8type == 0 && input.is_contiguous() &&
+                      weight.is_contiguous() &&
+                      (!residual_flag ||
+                       (residual->is_contiguous() &&
+                        reinterpret_cast<std::uintptr_t>(other_data) % 16 == 0)) &&
+                      (hidden_size == 2048 || hidden_size == 6144)) {
+                      auto launch_glm = [&](auto block_tag) {
+                          constexpr int Block = decltype(block_tag)::value;
+                          if (residual_flag) {
+                              rms_norm_fp8_quant_residual<scalar_in_t, scalar_out_t,
+                                  T_ACC, 8, Block, update_input, false, true>
+                                  <<<grid_opt, Block, 0, stream>>>(self_data,
+                                      other_data, weight_data, hidden_size, epsilon,
+                                      out_data, scaless, stride, fp8type, num_tokens);
+                          } else {
+                              rms_norm_fp8_quant_<scalar_in_t, scalar_out_t,
+                                  T_ACC, 8, Block, update_input, false, false, true>
+                                  <<<grid_opt, Block, 0, stream>>>(self_data,
+                                      other_data, weight_data, hidden_size, epsilon,
+                                      out_data, scaless, stride, fp8type, num_tokens);
+                          }
+                      };
+                      if (hidden_size == 2048) {
+                          launch_glm(std::integral_constant<int, 256>{});
+                      } else {
+                          launch_glm(std::integral_constant<int, 1024>{});
+                      }
+                      return;
+                  }
+              }
               constexpr int Vec = 16; 
               
               if (residual_flag) {
