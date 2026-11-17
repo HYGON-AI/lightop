@@ -71,7 +71,7 @@ def paged_mqa_logits_persisten(
 
     Equal physical KV pages in one group are loaded once. Different pages
     are handled independently, and a final partial group is valid. INT8 is
-    supported on gfx936/gfx938; FP8 requires gfx938.
+    supported on gfx936/gfx938/gfx946; FP8 requires gfx938.
     """
     from .. import op
 
@@ -616,7 +616,9 @@ def prefill_sparse_mqa_fused(
         ):
             raise ValueError("invalid fused query geometry")
         if not freqs_cis.is_complex() or not supports_prefill_sparse_fusion(q):
-            raise ValueError("complex frequencies and gfx936/gfx938 required")
+            raise ValueError(
+                "native sparse fusion requires complex RoPE frequencies and "
+                "gfx92a/gfx936/gfx938/gfx946")
     num_sms = torch.cuda.get_device_properties(q.device).multi_processor_count
     # Pack only live queries. Keep their original output/request coordinates;
     # a zero-history request must not consume another request's KV pages.
