@@ -1,6 +1,6 @@
 ---
 name: hcu-profiler-report
-description: LightOp 的 HCU/ROCm 算子需要性能分析证据时使用：运行 hipprof 或更深入的 ROCm/DTK profiler，采集同步 benchmark 日志，总结 API/kernel/内存耗时，检查可用计数器或 AMDGPU ISA，并给出且仅给出一个具体的下一步算子修改。
+description: LightOp 的 HCU/ROCm 算子需要性能分析证据时使用：运行 hipprof 或更深入的 ROCm/DTK profiler，采集同步 benchmark 日志，总结 API/kernel/内存耗时，检查可用计数器或目标 ISA，并给出且仅给出一个具体的下一步算子修改。
 ---
 
 # HCU 性能分析报告
@@ -19,7 +19,7 @@ benchmark 数字不足以确定下一步 LightOp HIP/ROCm kernel、绑定、disp
 
 原生 profiler 的命令、指标和支持范围以目标环境安装的 DTK 版本及工具帮助为准。公开源码与测试可参考 [HYGON-AI/flash-attention-das](https://github.com/HYGON-AI/flash-attention-das)；框架层 trace 范围归因可参考 [HYGON-AI/SkillHub 的 torch-trace-operator-profiler](https://github.com/HYGON-AI/SkillHub/tree/130aa48c2c55ce3366e01daf54e8494b80d78138/skills/torch-trace-operator-profiler)。两类证据分别核验，不能互相替代。
 
-优先 DTK/HCU 工具。首次使用 `hipprof` 测量 API/kernel/memcpy 时间。只有耗时证据无法解释下一次修改时，才升级到 `rocprof`、`rocprofv3`、`rocprof-compute`、计数器工具，或 AMDGPU ISA/code-object 检查。
+优先 DTK/HCU 工具。首次使用 `hipprof` 测量 API/kernel/memcpy 时间。只有耗时证据无法解释下一次修改时，才升级到 `rocprof`、`rocprofv3`、`rocprof-compute`、计数器工具，或目标 ISA/code-object 检查。
 
 ## 调用时机
 
@@ -64,7 +64,7 @@ benchmark 数字不足以确定下一步 LightOp HIP/ROCm kernel、绑定、disp
   rocprof-stats.csv           # 可用时提供
   rocprof-compute/            # 可用时提供
   code-object-metadata.txt    # 已提取时提供
-  amdgpu-isa.txt              # 已提取时提供
+  hcu-isa.txt                 # 已提取时提供
   resource-usage.txt          # VGPR/SGPR/LDS/occupancy/code-object 证据
   digest.md
 ```
@@ -82,7 +82,7 @@ benchmark 数字不足以确定下一步 LightOp HIP/ROCm kernel、绑定、disp
 7. 每个通过正确性的优化候选，使用支持的 `--pmc`、`--pmc-read`、`--pmc-write` 等形式收集 `hipprof` PMC 证据。选择下一次编辑前，解释缓存行为、内存/缓存流量、LDS 或 bank-conflict 证据和 occupancy/资源压力。计数器组或 occupancy 信号不可用时，记录准确尝试命令和错误输出。
 8. 深度分析门槛触发时，在选择下一次编辑前补充可用的 SQTT JSON、`dccobjdump` 反汇编、code-object 资源用量和 LDS/寄存器/occupancy 证据。
 9. `hipprof` 显示一个或少数主导 kernel，但无法解释原因时，用已安装的 ROCm/DTK profiler 采集更深的计数器证据。
-10. 问题看起来对代码生成敏感时，编辑前检查 AMDGPU ISA 或 code-object 元数据。
+10. 问题看起来对代码生成敏感时，编辑前检查目标 ISA 或 code-object 元数据。
 11. 将候选与基线或父版本比较，不只看绝对指标。
 12. 依据 [metrics.md](references/metrics.md) 的指标分组诊断。
 13. 按下方模板写 `digest.md`，最后一节必须且只能包含一个下一步编辑。
@@ -146,7 +146,7 @@ HIP_VISIBLE_DEVICES=<idle-card> hipprof --sqtt --sqtt-type 1 --output-type 0 \
   -d .lightop-kernel-agent/profile-artifacts/v002_deep/sqtt-json/ \
   python test/<family>/benchmark_<op>.py
 dccobjdump --inputs=<binary-or-so> --show-sass --show-instruction-encoding \
-  --separate-functions > .lightop-kernel-agent/profile-artifacts/v002_deep/amdgpu-isa.txt
+  --separate-functions > .lightop-kernel-agent/profile-artifacts/v002_deep/hcu-isa.txt
 hipprof --codeobj-analyze <binary-or-so> \
   > .lightop-kernel-agent/profile-artifacts/v002_deep/resource-usage.txt
 ```
@@ -259,7 +259,7 @@ Profiler 热点
 - 单一 kernel 主导且 benchmark 扩展性差：检查内存布局、向量化 load/store、block 大小和 dispatch 配置。
 - occupancy 偏低或出现 spill：降低 VGPR 压力、拆分 kernel、减少展开或针对目标 shape 特化。
 - LDS/barrier 症状明显：减少暂存、修复 bank conflict，或简化 wave 间同步。
-- 具备 MFMA 能力的 GEMM/MoE 路径性能差：确认命中了预期 asm/rocBLAS/hipBLASLt/CK/Triton AMD 路线，shape 配置匹配 `W`。
+- 具备 MFMA 能力的 GEMM/MoE 路径性能差：确认命中了预期 asm/rocBLAS/hipBLASLt/CK/Triton 的目标平台路线，shape 配置匹配 `W`。
 - 候选仅在一个 shape 获胜：记录到性能映射，并增加 shape/gfx dispatch，不替换更广泛的默认路径。
 
 ## 台账规则

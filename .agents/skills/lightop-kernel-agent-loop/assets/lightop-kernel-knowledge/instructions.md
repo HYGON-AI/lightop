@@ -1,6 +1,6 @@
 ---
 name: lightop-kernel-knowledge
-description: 在 HCU/ROCm 上新增或优化 LightOp 融合算子且需要 HIP 优化方法或实现证据时使用：检查本地源码、测试与配置，检索 ROCm/HIP/MIOpen/rocBLAS/hipBLASLt/Composable Kernel/Triton AMD/PyTorch ROCm/SGLang 或 vLLM AMD 实现，查阅官方文档；内置 CUDA PR 语料仅用于跨平台启发。
+description: 在 HCU/ROCm 上新增或优化 LightOp 融合算子且需要 HIP 优化方法或实现证据时使用：检查本地源码、测试与配置，检索 ROCm/HIP/MIOpen/rocBLAS/hipBLASLt/Composable Kernel、Triton、PyTorch、SGLang 或 vLLM 中已验证的 HIP/ROCm 实现，查阅官方文档；内置 CUDA PR 语料仅用于跨平台启发。
 allowed-tools: Bash Read Grep Glob
 ---
 
@@ -17,7 +17,7 @@ allowed-tools: Bash Read Grep Glob
 - LightOp 如何暴露和测试相似算子？
 - 新算子应放在哪个现有 `csrc/kernels/` 或专用家族中？
 - 当前 kernel 由哪张配置表或哪个 dispatcher 分支选择？
-- ROCm/PyTorch/Triton AMD/SGLang/vLLM 是否已经提供相似的 HCU 路径？
+- ROCm/PyTorch/Triton/SGLang/vLLM 是否已经提供相似的 HCU 路径？
 - 下一次修改应依据哪个 HCU profiler 信号？
 - 某个 CUDA PR 的思路能否迁移到 HIP/HCU，需要转换哪些内容？
 
@@ -34,7 +34,7 @@ allowed-tools: Bash Read Grep Glob
 | PMC/SQTT 解释、目标 ISA 核验 | optimizer 的 `references/hcu_metrics_guide.md`、`hcu_isa_signatures.json` |
 | 分支验证、消融和有效性状态 | optimizer 的 `references/optimizer-loop.md` |
 
-查阅后将知识变为可检验假设：`来源及版本/哈希 → 适用 gfx/算子契约 → 当前测量证据 → 一项修改 → 预期指标变化 → 正确性/benchmark/ISA/消融验收 → 不适用或停止条件`。目录中的方法 ID 必须实际查到；找不到则使用描述性假设名。没有 HCU 实测的 CUDA/AMD 案例只标记为启发。
+查阅后将知识变为可检验假设：`来源及版本/哈希 → 适用 gfx/算子契约 → 当前测量证据 → 一项修改 → 预期指标变化 → 正确性/benchmark/ISA/消融验收 → 不适用或停止条件`。目录中的方法 ID 必须实际查到；找不到则使用描述性假设名。没有 HCU 实测的跨平台案例只标记为启发。
 
 必须保留以下证据边界：
 
@@ -96,8 +96,8 @@ HCU 专用实现或性能分析问题使用此路线。优先官方文档和上�
 - ROCm/HIP 文档及 profiler 文档。
 - PyTorch ROCm 实现与测试。
 - MIOpen、rocBLAS、hipBLASLt、Composable Kernel、AITer。
-- Triton AMD 后端。
-- SGLang/vLLM AMD 路径与测试。
+- Triton 的目标平台后端。
+- SGLang/vLLM 的目标平台路径与测试。
 
 需要记录的证据：
 
@@ -108,7 +108,7 @@ HCU 专用实现或性能分析问题使用此路线。优先官方文档和上�
 
 ### 路线 C：内置 PR 语料
 
-内置语料仍含有用的 kernel 工程案例，但大部分面向 CUDA/NVIDIA。仅在路线 A、B 证据不足，或需要跨平台算法思路时使用。
+内置语料仍含有用的 kernel 工程案例，但大部分面向其他平台。仅在路线 A、B 证据不足，或需要跨平台算法思路时使用。
 
 从知识根目录运行：
 
@@ -117,7 +117,7 @@ python3 scripts/query.py "<operator> <dtype> <symptom>" --compact --limit 30
 python3 scripts/query.py "lightop hcu <operator>" --repo HYGON-AI/lightop --compact --limit 20
 python3 scripts/query.py "flash attention hcu" --repo HYGON-AI/flash-attention-das --compact --limit 20
 python3 scripts/query.py "hygon hcu mmac" --type source-reference --compact --limit 20
-python3 scripts/query.py "amd knowledge base hcu" --type source-reference --compact --limit 20
+python3 scripts/query.py "hcu hip profiler" --type source-reference --compact --limit 20
 python3 scripts/get_page.py <page-id>
 python3 scripts/fetch_evidence.py <page-id>          # 只读取已有缓存或完整库
 python3 scripts/fetch_evidence.py <page-id> --fetch  # 显式允许网络获取
@@ -140,8 +140,8 @@ evidence/pull-bundles/<repo>/mr-<id>/ORIGIN.yaml
 
 - CUTLASS/CuTe/PTX/SASS/TMA/WGMMA/tcgen05/Nsight 证据在完成转换前均视为不可直接移植。
 - 显式将 CUDA 概念映射到 ROCm：SM 对应 CU，适用时将 warp 对应到 wavefront，shared memory 对应 LDS，tensor-core 路径对应 MFMA 或选定的 ROCm 库/后端。
-- Hygon/HCU 专属结论优先使用目标编译证据：`hipprof`、code-object 资源分析、可选 SQTT 和最终 `dccobjdump` 输出。在 Hygon ISA 显示 `v_mmac`、MMOP、matrix-load、DS matrix-read、direct-to-LDS 或其他预期 HCU 模式前，AMD MFMA 与 CUDA tensor-core 名称只作为类比。
-- 只有精确签名存在于 HCU 来源页、现有工程源码或编译探针中时，才使用有源码依据的 HCU 或 AMD 命名 builtin。不能从指令助记符或通用 AMD 文档臆造 builtin 名称。
+- Hygon/HCU 专属结论优先使用目标编译证据：`hipprof`、code-object 资源分析、可选 SQTT 和最终 `dccobjdump` 输出。在 Hygon ISA 显示 `v_mmac`、MMOP、matrix-load、DS matrix-read、direct-to-LDS 或其他预期 HCU 模式前，跨平台矩阵指令与张量核术语只作为类比。
+- 只有精确签名存在于 HCU 来源页、现有工程源码或编译探针中时，才使用目标平台软件栈中有源码依据的内建函数。不能从指令助记符或其他平台的通用文档臆造 builtin 名称。
 - 不以 CUDA profiler 指标证明 HCU 瓶颈。
 - CUDA 来源应记录为启发，不能当成 HCU 实现已经成立的证据。
 

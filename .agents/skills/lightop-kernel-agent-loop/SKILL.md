@@ -30,3 +30,5 @@ description: 在 HCU/ROCm 上新增或优化 LightOp 算子：恢复语义与工
 研究使用内置 [lightop-kernel-knowledge](assets/lightop-kernel-knowledge/instructions.md)，性能分析使用 [hcu-profiler-report](assets/hcu-profiler-report/instructions.md)。两者包含查询、分析必需的脚本和离线来源索引；命令相对于各自目录运行。知识查询需要 Python 3.10+、PyYAML 6+；设备采样工具使用目标环境的 DTK。索引直接读取随仓库提供的 `index.jsonl`，不解压、不写入用户缓存；证据缓存默认位于 `~/.cache/lightop-kernel-agent/`，也遵循 `XDG_CACHE_HOME`。查询默认离线，只有显式获取尚未缓存的证据才访问网络，详见[语料与缓存说明](assets/lightop-kernel-knowledge/references/corpus-packaging.md)。抓取、重建索引和批量仓库维护工具保留在 hcu-infer-pilot。
 
 深度优化按 [HIP 优化规则](references/hip-optimization-rules.md) 中的来源映射读取同级 `kernel-hip-handbook` / `kernel-hip-optimize`。它们是扩展知识来源，不是启动依赖；缺失时仍可执行本文及内置规则，但不能声称读取了缺失资料或调用不存在的脚本。
+
+流程说明、示例说明和报告标题统一使用 HCU 或“目标平台”表述。软件项目与接口标识按实际调用保留；原始版权、许可证和来源数据不得改写归属。

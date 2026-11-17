@@ -80,7 +80,7 @@
 
 ## ISA / Code Object
 
-profiler 指向代码生成问题时，检查 AMDGPU ISA 或 code-object 元数据：
+profiler 指向代码生成问题时，检查目标 ISA 或 code-object 元数据：
 
 - 热点指令窗口。
 - 内存操作的向量宽度。

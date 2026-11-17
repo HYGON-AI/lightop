@@ -2,7 +2,7 @@
 
 用户希望为 HCU/ROCm 新增 LightOp 算子或优化已有算子时，使用此流程。由 agent 直接执行 HIP 证据驱动闭环；优化选法、目标 ISA 核验和消融遵循 [HIP 优化规则](hip-optimization-rules.md)。
 
-不要将其用于通用 CUDA/NVIDIA kernel 调优。优先考虑 HIP C++、ROCm PyTorch 扩展、已有 LightOp 模式、MIOpen/rocBLAS/hipBLASLt、Composable Kernel 或 Triton AMD；所选路线必须已被本地仓库支持，或由用户明确要求。
+本流程面向 LightOp 的目标平台实现。优先考虑 HIP C++、ROCm PyTorch 扩展、已有 LightOp 模式、MIOpen/rocBLAS/hipBLASLt、Composable Kernel 或 Triton 的 HIP/ROCm 路径；所选路线必须已被本地仓库支持，或由用户明确要求。
 
 ## 输入契约
 
@@ -204,11 +204,11 @@ LightOp 开发规范门禁：
 ## HCU/ROCm 默认规则
 
 - LightOp 测试中的 PyTorch `torch.cuda` namespace 视为 ROCm 运行时接口。
-- 优先 `hipcc`/ROCm 扩展构建，不采用仅 NVIDIA 的编译路径。
+- 优先 `hipcc`/ROCm 扩展构建，不采用仅适用于其他平台的编译路径。
 - 提交的 LightOp kernel 源码扩展名使用 `.cu`，不手写提交 `.hip` 算子文件。构建生成的 `.hip` 保留为构建产物，不作为源码修改。
 - 遵守 `PYTORCH_ROCM_ARCH`；未设置时从 `torch.cuda.get_device_properties(0).gcnArchName` 推断 gfx。
 - 本地 LightOp setup 已采用默认 `gfx928;gfx936;gfx938` 时优先沿用，除非用户给出更窄目标。
-- 不在 LightOp 路径中引入 CUDA-only 头文件、PTX/SASS 假设、CUTLASS/CuTe、Nsight Compute、TMA/WGMMA/tcgen05 或 NVIDIA 架构规则。
+- 不在 LightOp 路径中引入 CUDA-only 头文件、PTX/SASS 假设、CUTLASS/CuTe、Nsight Compute、TMA/WGMMA/tcgen05 或其他平台的架构规则。
 - 借鉴 CUDA 来源时，转换为 ROCm 概念，并记录来源仅用于跨平台启发。
 
 可用的环境探测命令：

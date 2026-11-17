@@ -54,7 +54,7 @@
 ## 4. HCU ISA 和工具规则
 
 - 对参考覆盖的 gfx936/gfx938 使用 wave64 设计；其它 gfx 先核实。重查 CUDA warp32、shuffle 宽度、mask、block 映射。不能因 wave 同步假设删除跨线程必要同步。
-- 针对矩阵 kernel，优先工程已经支持且能编译的 CK Tile/HCU 示例；缺少依赖时保留已有 HIP 路线并记录约束，不自动引入新依赖。AMD MFMA 名称仅作类比，Hygon MMAC/MMOP 是否成立以目标产物为证。
+- 针对矩阵 kernel，优先工程已经支持且能编译的 CK Tile/HCU 示例；缺少依赖时保留已有 HIP 路线并记录约束，不自动引入新依赖。跨平台矩阵指令名称仅作类比，目标平台的 MMAC/MMOP 是否成立以编译产物为证。
 - builtin 使用精确来源签名、类型/地址空间和 gfx 守卫，先做最小目标编译探针。`__has_builtin` 否定或仅编译成功都不是最终结论；不要根据指令助记符臆造 intrinsic。
 - 使用目标构建产生并实际加载的 `.so`/code object，核对时间戳或哈希及目标符号，再运行 `hipprof --codeobj-analyze <binary>` 和 `dccobjdump --inputs=<binary> --show-sass --show-instruction-encoding --separate-functions`。资源/符号选项先查安装版本帮助。
 - 向量化看相关 global/buffer/flat load/store 宽度；矩阵路径看目标 `v_mmac`/MMOP、matrix-load、DS matrix-read；LDS 路径检查 staging、读写与同步。只见到别的函数指令不算通过。
