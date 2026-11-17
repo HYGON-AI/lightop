@@ -83,12 +83,49 @@ def isNOt_exist_co_dir():
         return True
     return False
 
-def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype):
+def gemm_w8a8_smooth(a, b, scale_a, scale_b, bias, out_dtype, *,
+                     input_scale_first=False):
+    """Channel INT8 GEMM returning ``(supported, output)``.
+
+    ``input_scale_first=False`` preserves the existing dispatch and rounding.
+    With True, gfx936 BF16 ASM evaluates ``(float(acc) * scale_a) * scale_b``
+    before the final BF16 cast, instead of multiplying the scales first.
+    This optional mode requires no bias, M > 16, N divisible by 256, K divisible
+    by 128, contiguous INT8 A / transposed contiguous INT8 B and contiguous
+    FP32 scales shaped [M,1] / [N,1], all on the same HCU. Unsupported inputs
+    return ``(False, None)`` so the caller can preserve the requested semantics.
+    """
+    if not isinstance(input_scale_first, bool):
+        raise TypeError("input_scale_first must be bool")
     use_gemm_w8s8_smooth = os.getenv("LIGHTOP_GEMM_W8A8_SMOOTH", "1")
     if use_gemm_w8s8_smooth != "1":
         return False, None
-    assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
+    if input_scale_first:
+        if a.dim() != 2 or b.dim() != 2:
+            return False, None
+    else:
+        assert a.dim()==2 and b.dim()==2 and a.is_contiguous() and b.is_contiguous()==False
     m, n, k = a.shape[0], b.shape[1], a.shape[1]
+    if input_scale_first:
+        if (out_dtype != torch.bfloat16 or bias is not None
+                or m <= 16 or n <= 0 or n % 256 or k <= 0 or k % 128
+                or b.shape[0] != k or not a.is_contiguous()
+                or (m, k, n) == (32, 2304, 5120)
+                or not a.is_cuda or a.dtype != torch.int8 or b.dtype != torch.int8
+                or b.device != a.device or b.stride() != (1, k)
+                or scale_a.dtype != torch.float32 or scale_b.dtype != torch.float32
+                or scale_a.shape != (m, 1) or scale_b.shape != (n, 1)
+                or not scale_a.is_contiguous() or not scale_b.is_contiguous()
+                or scale_a.device != a.device or scale_b.device != a.device):
+            return False, None
+        arch = getattr(torch.cuda.get_device_properties(a.device), "gcnArchName", "")
+        if arch.split(":")[0] != "gfx936" or isNOt_exist_co_dir():
+            return False, None
+        # Do not enter a cached BLASLt/small-M/tuned ASM route with different
+        # scale association. The opt-in object retains the original WGM8 body.
+        output = op.gemm_w8a8_smooth_asm(
+            a, b, scale_a, scale_b, bias, out_dtype, m, n, k, False, 8, True)
+        return True, output
     # Diagnostic isolation: preserve every other optimized GEMM route.
     if (m, k, n) == (32, 2304, 5120):
         if not getattr(gemm_w8a8_smooth, "_m32_bypass_reported", False):
