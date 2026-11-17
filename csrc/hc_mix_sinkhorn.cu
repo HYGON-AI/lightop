@@ -293,7 +293,7 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
                                        const Tensor &scale, const Tensor &base,
                                        int64_t iters, double rms, double eps,
                                        int64_t hc, bool tf) {
-  TORCH_CHECK(x.is_cuda(), "hc mix requires a gfx928, gfx936 or gfx938 GPU");
+  TORCH_CHECK(x.is_cuda(), "hc mix requires a gfx928, gfx936, gfx938 or gfx946 GPU");
   dense(x, x, kBFloat16);
   TORCH_CHECK(x.dim() == 2 && x.size(1) == K &&
                   x.size(0) <= std::numeric_limits<int>::max() && hc == 4,
@@ -325,7 +325,7 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
               "hc mix: native compensated kernels require gfx928, gfx936 or gfx938/gfx946");
   TORCH_CHECK(tf || ((arch == "gfx938" || arch == "gfx946") ? m <= 131072
                                       : m == 0 || (m >= 4096 && m <= 65536)),
-              "BF16x3 requires M=0..131072 on gfx938 or M=0/4096..65536 on gfx928/gfx936");
+              "BF16x3 requires M=0..131072 on gfx938/gfx946 or M=0/4096..65536 on gfx928/gfx936");
   auto opts = x.options().dtype(kFloat);
   auto pre = at::empty({m, 4}, opts), post = at::empty_like(pre),
        comb = at::empty({m, 4, 4}, opts);
