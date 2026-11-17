@@ -1037,7 +1037,7 @@ __global__ void __launch_bounds__(1024) MOE_WI4AI8_PERCHANNEL_MARLIN_HIP_NN_UP_d
                   ((float*)&D)[j] = static_cast<float>(((int*)&C_reg[0][j])[i]);
                 }
               floatx4* output_c_fp32 = reinterpret_cast<floatx4*>(&d_output_fp32[output_offset + token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]);
-              #ifdef __gfx936__
+              #if defined(__gfx936__)
               __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
               #endif
               // #ifdef __gfx926__
@@ -1415,7 +1415,7 @@ __global__ void __launch_bounds__(1024) MOE_WI4AF8_PERCHANNEL_MARLIN_HIP_NN_UP_d
                   ((float*)&D)[j] = static_cast<float>(((float*)&C_reg[0][j])[i]);
                 }
               floatx4* output_c_fp32 = reinterpret_cast<floatx4*>(&d_output_fp32[output_offset + token_index * (size_n>>2) + warp_n_id * WARP_N *4 + col_id * 4 + i * 16]);
-              #ifdef __gfx936__
+              #if defined(__gfx936__)
               __builtin_amdgcn_global_atomic_fadd_v4f32(output_c_fp32, D);
               #endif
               // #ifdef __gfx926__

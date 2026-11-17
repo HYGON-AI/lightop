@@ -208,7 +208,7 @@ __global__ void bilinear_upsample_backward_kernel_fp32(
 
     // 向 4 个输入像素散射（scatter-add），使用 float32 atomicAdd 保证精度
     float* gin = grad_input_f32 + nc * H_in * W_in;
-    #ifdef __gfx936__
+    #if defined(__gfx936__)
 
         if constexpr (1) {
             #pragma unroll
@@ -304,7 +304,7 @@ __global__ void bilinear_upsample_backward_kernel_fp16(
 
     // 向 4 个输入像素散射（scatter-add），使用 float32 atomicAdd 保证精度
     float* gin = grad_input_f32 + nc * H_in * W_in;
-    #ifdef __gfx936__
+    #if defined(__gfx936__)
     #pragma unroll
     for(int i = 0; i < vec; i++) {
         float g = static_cast<float>(g_vec[i]);

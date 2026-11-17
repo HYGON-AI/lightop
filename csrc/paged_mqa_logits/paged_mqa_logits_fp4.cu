@@ -372,6 +372,9 @@ __device__ __forceinline__ floatx4 mmac_bf16(bf16x4 a, bf16x4 b, floatx4 c) {
 #elif defined(__gfx936__) || (defined(__gfx928__) || defined(__gfx92a__))
     return HCU_MMAC_F32_BF16(a, b, c);
 #else
+    // Runtime dispatch rejects other architectures before launching. Trap
+    // instead of returning `c`, which would silently drop the product.
+    __builtin_trap();
     return c;
 #endif
 }

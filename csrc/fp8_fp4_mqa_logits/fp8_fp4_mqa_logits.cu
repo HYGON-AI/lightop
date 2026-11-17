@@ -206,7 +206,9 @@ __device__ __forceinline__ floatx4 mmac_bf16_inline(
     return d;
 #else
     // Lightop also builds code objects for other architectures. The host
-    // dispatch rejects those devices before launching this kernel.
+    // dispatch rejects those devices before launching this kernel. Trap
+    // rather than returning `c`, which would silently drop the product.
+    __builtin_trap();
     return c;
 #endif
 }
@@ -726,7 +728,8 @@ torch::Tensor fp8_fp4_mqa_logits(
     const std::string arch(properties.gcnArchName);
     TORCH_CHECK(arch.rfind("gfx936", 0) == 0 || arch.rfind("gfx938", 0) == 0 ||
                     arch.rfind("gfx946", 0) == 0,
-                "fp8_fp4_mqa_logits requires gfx936, gfx938 or gfx946, got ", arch);
+                "fp8_fp4_mqa_logits requires gfx936, gfx938 or gfx946, got ",
+                arch);
 
     auto out = torch::full({t, max_seqlen_k}, -INFINITY,
                            q_data.options().dtype(at::kFloat));

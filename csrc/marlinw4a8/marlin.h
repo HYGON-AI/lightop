@@ -67,7 +67,7 @@ static __device__ inline uint16_t f32_to_bf16(float f){
 }
 
 // 仅在 BW gfx 936 上才编译实际算子
-#ifdef __gfx936__
+#if defined(__gfx936__)
 
 __device__ inline void mmac_bw_int8(
                                       const FragA& frag_a,
