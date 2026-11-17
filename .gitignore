@@ -61,3 +61,7 @@ csrc/**/hip_*.h
 
 # in-place build outputs
 python/lightop/*.so
+
+# Repo-local AI workflow state and optional in-checkout user cache.
+/.lightop-kernel-agent/
+/.cache/lightop-kernel-agent/
