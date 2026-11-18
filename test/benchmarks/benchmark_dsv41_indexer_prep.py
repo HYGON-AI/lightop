@@ -9,7 +9,7 @@ import statistics
 import torch
 from sgl_kernel import rope_fp4_fake_quant
 
-from lightop.dsv41_indexer_prep import dsv41_indexer_rope_fake_quant
+from lightop.attention import dsv41_indexer_rope_fake_quant
 
 
 def time_us(fn, iterations, repeats):

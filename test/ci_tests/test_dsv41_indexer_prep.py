@@ -11,9 +11,17 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_attention_export():
+    from lightop import attention
+    from lightop._dsv41_prep import dsv41_indexer_rope_fake_quant
+
+    assert "dsv41_indexer_rope_fake_quant" in attention.__all__
+    assert attention.dsv41_indexer_rope_fake_quant is dsv41_indexer_rope_fake_quant
+
+
 @pytest.fixture
 def ops():
-    from lightop.dsv41_indexer_prep import dsv41_indexer_rope_fake_quant
+    from lightop.attention import dsv41_indexer_rope_fake_quant
 
     native = pytest.importorskip("sgl_kernel")
     if not hasattr(native, "rope_fp4_fake_quant"):
