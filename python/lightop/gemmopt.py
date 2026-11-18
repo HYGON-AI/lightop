@@ -165,8 +165,9 @@ def moe_gemm_marlin_w4a8(
                     global_reduce_buffer: Optional[torch.Tensor], # 用于 block间归约的 缓存区Tensor
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config.get('DELTA', 1)
+    mode, delta = _hip_asm_resolve_mode(config, input.shape[0],
+        asm_channel="moe_w4a8_channel", op_name="moe_gemm_marlin_w4a8",
+        hip_decode=0, hip_prefill=0)
 
     if mode < 500: # 手写算子实现
         op.moe_gemm_w4a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
@@ -308,8 +309,9 @@ def moe_gemm_marlin_w16a16(
                     top_k: int,
                     config: Dict[str, Any],
                     is_ep:bool = False) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config.get('DELTA', 1)
+    mode, delta = _hip_asm_resolve_mode(config, input.shape[0],
+        asm_channel="moe_w16a16_channel", op_name="moe_gemm_marlin_w16a16",
+        hip_decode=0, hip_prefill=0)
 
     if mode < 1000:
         op.moe_gemm_w16a16(input, b_qweight, output,  topk_weights,
@@ -374,8 +376,9 @@ def moe_gemm_marlin_w8a8(input: torch.Tensor,
                     num_tokens_post_pad: torch.Tensor, 
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config['DELTA']
+    mode, delta = _hip_asm_resolve_mode(config, input.shape[0],
+        asm_channel="moe_w8a8_channel", op_name="moe_gemm_marlin_w8a8",
+        hip_decode=0, hip_prefill=0)
 
     if mode < 1000:
         op.moe_gemm_marlin_w8a8(input, b_qweight, output, a_scale, b_scale, topk_weights,
@@ -384,6 +387,59 @@ def moe_gemm_marlin_w8a8(input: torch.Tensor,
         op.moe_marlin_w8a8_asm(input, b_qweight, output, a_scale, b_scale, topk_weights,
                                         sorted_token_ids, experts_ids, num_tokens_post_pad, top_k, mode, delta)
     return output
+
+def _fp8_resolve_mode(config: Dict[str, Any], m: int):
+    """moe_gemm_marlin_w8a8_fp8 专用：无 config / 本架构无 fp8 ASM .co 时回退 HIP marlin。"""
+    import logging, os
+    from lightop.utils import gfx as _arch, LIGHTOP_ASM_DIR
+    _logger = logging.getLogger(__name__)
+    _fp8_asm_dir = os.path.join(LIGHTOP_ASM_DIR or "", "moe_w8a8_fp8_channel")
+    _fp8_asm_ok = os.path.isdir(_fp8_asm_dir) and any(
+        f.endswith(".co") for f in os.listdir(_fp8_asm_dir))
+    def _hip_default():
+        return (21 if m <= 128 else 500), 1  # HIP marlin: decode / prefill（均在 fp8 kernel_maps）
+    if not config or "MODE" not in config:
+        mode, delta = _hip_default()
+        _logger.warning(
+            "[moe_gemm_marlin_w8a8_fp8][FALLBACK] no config, arch=%s, M=%s -> HIP MODE=%s",
+            _arch, m, mode)
+        return mode, delta
+    mode = int(config["MODE"])
+    delta = int(config.get("DELTA", 1))
+    if mode >= 1000 and not _fp8_asm_ok:
+        hip, _d = _hip_default()
+        _logger.warning(
+            "[moe_gemm_marlin_w8a8_fp8][FALLBACK] MODE=%s but no fp8 ASM .co on arch=%s -> HIP MODE=%s",
+            mode, _arch, hip)
+        return hip, delta
+    return mode, delta
+
+
+def _hip_asm_resolve_mode(config, m, asm_channel, op_name, hip_decode=0, hip_prefill=0):
+    """moe_gemm_marlin_{w8a8,w16a16,w4a8} 通用：无 config / 本架构无 ASM .co 时回退 HIP。
+    仅当 config 带 MODE>=1000 且本架构存在 <op>_channel/*.co 时才走 ASM，否则 HIP。"""
+    import logging, os
+    from lightop.utils import gfx as _arch, LIGHTOP_ASM_DIR
+    _logger = logging.getLogger(__name__)
+    _asm_dir = os.path.join(LIGHTOP_ASM_DIR or "", asm_channel)
+    _asm_ok = os.path.isdir(_asm_dir) and any(
+        f.endswith(".co") for f in os.listdir(_asm_dir))
+    def _hip_default():
+        return (hip_decode if m <= 128 else hip_prefill), 1  # MOE_THRESHOLD=128: decode / prefill
+    if not config or "MODE" not in config:
+        mode, delta = _hip_default()
+        _logger.warning("[%s][FALLBACK] no config, arch=%s, M=%s -> HIP MODE=%s",
+                        op_name, _arch, m, mode)
+        return mode, delta
+    mode = int(config["MODE"])
+    delta = int(config.get("DELTA", 1))
+    if mode >= 1000 and not _asm_ok:
+        hip, _d = _hip_default()
+        _logger.warning("[%s][FALLBACK] MODE=%s but no ASM .co on arch=%s -> HIP MODE=%s",
+                        op_name, mode, _arch, hip)
+        return hip, delta
+    return mode, delta
+
 
 def moe_gemm_marlin_w8a8_fp8(input: torch.Tensor,
                     b_qweight: torch.Tensor,
@@ -396,8 +452,7 @@ def moe_gemm_marlin_w8a8_fp8(input: torch.Tensor,
                     num_tokens_post_pad: torch.Tensor, 
                     top_k: int,
                     config: Dict[str, Any]) -> torch.Tensor:
-    mode = config['MODE']
-    delta = config['DELTA']
+    mode, delta = _fp8_resolve_mode(config, input.shape[0])
 
     if mode < 1000:
         op.moe_gemm_marlin_w8a8_fp8(input, b_qweight, output, a_scale, b_scale, topk_weights,
