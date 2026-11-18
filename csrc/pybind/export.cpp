@@ -567,8 +567,8 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
-void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, const c10::optional<torch::Tensor>& num_local_tokens_tensor = c10::nullopt, int expect_m = -1);
-void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
+void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, const c10::optional<torch::Tensor>& num_local_tokens_tensor = c10::nullopt, int expect_m = -1, bool round_silu = true);
+void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, bool round_silu);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
 void fuse_situ_mul_quant_ep(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::Tensor& masked_m, double situ_beta, double situ_linear_beta, int64_t expect_m);
@@ -1522,6 +1522,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("routed_scaling_factor"),
       py::arg("apply_routed_scaling_factor_on_output") = true);
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
+  m.attr("SILU_CLAMP_QUANT_ROUNDING_VERSION") = 2;
   m.def(
       "fuse_silu_mul_clamp_quant",
       &at::native::fuse_silu_mul_clamp_quant,
@@ -1533,7 +1534,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("use_gelu") = false,
       py::arg("smooth_scale") = py::none(),
       py::arg("num_local_tokens_tensor") = py::none(),
-      py::arg("expect_m") = -1);
+      py::arg("expect_m") = -1,
+      py::arg("round_silu") = true);
   m.def(
       "fuse_silu_mul_clamp_quant_ep",
       &at::native::fuse_silu_mul_clamp_quant_ep,
@@ -1545,7 +1547,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("mask_m"),
       py::arg("expect_m") = -1,
       py::arg("use_gelu") = false,
-      py::arg("smooth_scale") = py::none());
+      py::arg("smooth_scale") = py::none(),
+      py::arg("round_silu") = true);
   m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
   m.def("fuse_situ_mul_quant_contiguous",&at::native::fuse_situ_mul_quant_contiguous,"fuse_situ_mul_quant_contiguous (kimi k3 softcap-glu + per-token int8 quant, contiguous)");
   m.def("fuse_situ_mul_quant_ep",(void (*)(torch::Tensor&, torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, int64_t))&at::native::fuse_situ_mul_quant_ep,"fuse_situ_mul_quant_ep (kimi k3 softcap-glu + per-token int8 quant, ep-masked; expect_m grid clamp)",py::arg("input"), py::arg("output"), py::arg("scales"), py::arg("masked_m"),py::arg("situ_beta"), py::arg("situ_linear_beta"),py::arg("expect_m") = -1);
