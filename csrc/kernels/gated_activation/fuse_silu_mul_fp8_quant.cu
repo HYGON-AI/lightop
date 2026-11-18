@@ -8,6 +8,7 @@
 #include <ATen/native/cuda/MemoryAccess.cuh>
 
 #include <cmath>
+#include <hip/hip_bf16.h>
 #include <cstdint>
 #include <cstdlib>
 #include "../../include/reduce.h"
@@ -1248,7 +1249,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked(
 // Exact-cover specialization: block_size * VEC * nchunks == d (or >=d when
 // CheckBounds). Drops per-chunk bounds checks when Exact, freezes e4m3fn.
 template <typename scalar_t, int VEC, bool act_first, int block_size, int nchunks,
-          bool CheckBounds = false>
+          bool CheckBounds = false, bool Step5 = false, typename index_t = int32_t>
 __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3(
     int64_t num_tokens,
     uint8_t* __restrict__ out,
@@ -1256,7 +1257,7 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e
     float* __restrict__ scales,
     const int d,
     const int topK,
-    int32_t *num_local_tokens_tensor,
+    index_t *num_local_tokens_tensor,
     const float limit
     ) {
   static_assert(VEC >= 4 && (VEC % 4) == 0, "VEC must be multiple of 4");
@@ -1264,7 +1265,17 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e
   (void)num_tokens;
   const int64_t token_idx = blockIdx.x;
   if (num_local_tokens_tensor != nullptr) {
-    if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+    if constexpr (Step5) {
+      if (num_local_tokens_tensor[token_idx] < 0) {
+        // EP padding may be interleaved. Never read its uninitialized input.
+        for (int col = threadIdx.x * 4; col < d; col += block_size * 4)
+          *reinterpret_cast<uint32_t*>(out + token_idx * d + col) = 0;
+        if (threadIdx.x == 0) scales[token_idx] = 1.0e-10f / 448.0f;
+        return;
+      }
+    } else {
+      if (token_idx >= num_local_tokens_tensor[0] * topK) return;
+    }
   }
 
   constexpr int share_size = block_size / C10_WARP_SIZE;
@@ -1297,25 +1308,43 @@ __global__ void act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e
         *reinterpret_cast<const VecType*>(up_base + idx);
     #pragma unroll
     for (int i = 0; i < VEC; ++i) {
-      r_y[c][i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
-          r_x1[i], r_x2[i], limit);
+      if constexpr (Step5) {
+        const float gate = static_cast<float>(r_x1[i]);
+        const float up = static_cast<float>(r_x2[i]);
+        constexpr float log2e = 1.44269504088896340736f;
+        const float silu = gate * __builtin_amdgcn_rcpf(
+            1.f + __builtin_amdgcn_exp2f(-gate * log2e));
+        r_y[c][i] = static_cast<float>(static_cast<scalar_t>(
+            fminf(silu, limit) * fminf(fmaxf(up, -limit), limit)));
+      } else {
+        r_y[c][i] = compute_with_swiglu_limit_f<scalar_t, act_first>(
+            r_x1[i], r_x2[i], limit);
+      }
       row_max = fmaxf(row_max, fabsf(r_y[c][i]));
     }
   }
 
-  row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
-  __shared__ float s_token_scale;
-  const float fp8type_max_v =
-      static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>);
-  if (tidx == 0) {
-    const float scale = fmaxf(
-        row_max / fp8type_max_v,
-        min_scaling_factor<c10::Float8_e4m3fn>::val());
-    s_token_scale = scale;
-    scales[token_idx] = scale;
+  float inv_s;
+  if constexpr (Step5 && block_size == C10_WARP_SIZE) {
+    // One wave covers the entire row; broadcast without LDS or block barriers.
+    row_max = WarpReduceMax_ROW<float>(row_max);
+    row_max = WARP_SHFL(row_max, 0);
+    const float scale = fmaxf(row_max, 1.0e-10f) / 448.0f;
+    if (tidx == 0) scales[token_idx] = scale;
+    inv_s = 1.0f / scale;
+  } else {
+    row_max = BlockReduceMax_ROW<float, block_size>(row_max, val_shared);
+    __shared__ float s_token_scale;
+    if (tidx == 0) {
+      const float scale = Step5 ? fmaxf(row_max, 1.0e-10f) / 448.0f
+          : fmaxf(row_max / static_cast<float>(quant_type_max_v<c10::Float8_e4m3fn>),
+                  min_scaling_factor<c10::Float8_e4m3fn>::val());
+      s_token_scale = scale;
+      scales[token_idx] = scale;
+    }
+    __syncthreads();
+    inv_s = 1.0f / s_token_scale;
   }
-  __syncthreads();
-  const float inv_s = 1.0f / s_token_scale;
 
   #pragma unroll
   for (int c = 0; c < nchunks; ++c) {
@@ -2429,6 +2458,43 @@ void fuse_silu_mul_fp8_quant(
       topK, expert_m, expert_ids);
 }
 
+
+// Reuses the existing vectorized LightOp activation/quant kernel. Separate API
+// preserves all legacy pre-SiLU-clamp and scale-floor behavior.
+void step5_swiglustep_fp8_quant(torch::Tensor input, torch::Tensor expert_ids,
+                              torch::Tensor output, torch::Tensor scales, double limit) {
+  TORCH_CHECK(input.is_cuda() && input.scalar_type() == at::kBFloat16
+      && input.dim() == 2 && input.size(1) == 3072 && input.is_contiguous(),
+      "Step5 requires contiguous GPU BF16 [M,3072]");
+  const int64_t rows = input.size(0);
+  TORCH_CHECK(expert_ids.device() == input.device() && expert_ids.dim() == 1
+      && expert_ids.numel() == rows && expert_ids.is_contiguous()
+      && (expert_ids.scalar_type() == at::kInt || expert_ids.scalar_type() == at::kLong),
+      "Step5 requires contiguous int32/int64 expert_ids [M]");
+  TORCH_CHECK(output.device() == input.device()
+      && output.scalar_type() == at::ScalarType::Float8_e4m3fn
+      && output.dim() == 2 && output.size(0) == rows && output.size(1) == 1536
+      && output.is_contiguous(), "Step5 requires contiguous E4M3FN output [M,1536]");
+  TORCH_CHECK(scales.device() == input.device() && scales.scalar_type() == at::kFloat
+      && scales.dim() == 2 && scales.size(0) == rows && scales.size(1) == 1
+      && scales.is_contiguous(), "Step5 requires contiguous FP32 scales [M,1]");
+  TORCH_CHECK(std::isfinite(limit) && limit > 0., "Step5 limit must be finite and positive");
+  if (!rows) return;
+  const auto in_start = reinterpret_cast<uintptr_t>(input.data_ptr());
+  const auto out_start = reinterpret_cast<uintptr_t>(output.data_ptr());
+  TORCH_CHECK(in_start >= out_start + output.nbytes() || out_start >= in_start + input.nbytes(),
+      "Step5 input and output must not overlap");
+  const at::cuda::OptionalCUDAGuard guard(device_of(input));
+  const auto stream = at::cuda::getCurrentCUDAStream();
+  AT_DISPATCH_INDEX_TYPES(expert_ids.scalar_type(), "step5_swiglustep_fp8_quant", [&] {
+    act_and_mul_fp8_quant_kernel_opt1_one_with_limit_chunked_exact_e4m3<
+        at::BFloat16, 8, true, 64, 3, false, true, index_t>
+        <<<rows, 64, 0, stream>>>(
+            rows, reinterpret_cast<uint8_t*>(output.data_ptr()),
+            input.data_ptr<at::BFloat16>(), scales.data_ptr<float>(), 1536, 1,
+            expert_ids.data_ptr<index_t>(), static_cast<float>(limit));
+  });
+}
 
 }
 }
