@@ -1,7 +1,10 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Numerical and captured-size tests for DPSKV4 LightOp gather/upconvert."""
+"""Numerical and captured-size tests for DPSKV4 LightOp gather/upconvert.
+
+    python3 -m pytest -q test/ci_tests/test_dsv4_gather_upconvert_k_cache.py
+"""
 
 import os
 
