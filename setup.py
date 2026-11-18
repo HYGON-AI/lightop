@@ -630,13 +630,6 @@ def get_extensions():
         sources=["./csrc/router/router_gemm.cu"],
         extra_compile_args={"nvcc": ["-O3"]},
     ))
-    extensions.append(extension(
-        name="lightop._dsv41_prep",
-        sources=["./csrc/dsv41_prep/dsv41_indexer_prep.cu"],
-        # Preserve the native real RoPE multiply/subtract rounding. The
-        # imaginary component uses an explicit fmaf inside the kernel.
-        extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "-ffp-contract=off"]},
-    ))
     return extensions
 
 def _get_pytorch_version():
