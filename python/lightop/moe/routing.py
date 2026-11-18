@@ -16,8 +16,17 @@ from ..moe_fused_gate import (
 )
 from .mega_gate import bf16_mega_gate_hcu
 
-topk_ids_postprocess = op.topk_ids_postprocess
-topk_softmax = op.topk_softmax
+# Lazy aliases (PEP 562): resolve through the op aggregator on first access
+# instead of at import time, so partial/split builds (LIGHTOP_MODULES=...)
+# that do not contain the MoE family can still import this module. In full
+# builds the resolved objects are the exact same pybind functions as before.
+_LAZY_OP_ALIASES = ("topk_ids_postprocess", "topk_softmax")
+
+
+def __getattr__(name):
+    if name in _LAZY_OP_ALIASES:
+        return getattr(op, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def moe_align_block_size_out(

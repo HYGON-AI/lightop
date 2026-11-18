@@ -23,6 +23,35 @@ def _get_pytorch_version_int():
 dtk_version = get_dtk_version(ROCM_HOME)
 torch_version = _get_pytorch_version_int()
 
+# Phase-0/Phase-1 opt-in pilots: split operator families into their own
+# extension modules (lightop._ext.op_norm / lightop._ext.op_mqa_logits),
+# mirroring AITER's "one operator backend = one module_xxx.so" layout.
+# Default off -> the build is byte-for-byte unchanged (a single "lightop.op"
+# monolith, no "lightop/op.py" aggregator active).
+ENABLE_NORM_MODULE = os.environ.get("LIGHTOP_ENABLE_NORM_MODULE", "0") == "1"
+ENABLE_MQA_MODULE = os.environ.get("LIGHTOP_ENABLE_MQA_MODULE", "0") == "1"
+
+# Selective developer build: LIGHTOP_MODULES=mqa_logits[,norm] builds ONLY the
+# listed split modules (implies their enable switches) and skips the monolith
+# and the router/prep extensions. Symbols of unbuilt families are unavailable
+# at runtime by design (the op.py aggregator tolerates missing modules);
+# release wheels must always be full builds.
+LIGHTOP_MODULES = tuple(
+    s.strip() for s in os.environ.get("LIGHTOP_MODULES", "").split(",") if s.strip()
+)
+_KNOWN_SPLIT_MODULES = ("norm", "mqa_logits")
+if LIGHTOP_MODULES:
+    _unknown = sorted(set(LIGHTOP_MODULES) - set(_KNOWN_SPLIT_MODULES))
+    if _unknown:
+        raise SystemExit(
+            f"LIGHTOP_MODULES: unknown module(s) {_unknown}; "
+            f"known modules: {list(_KNOWN_SPLIT_MODULES)}"
+        )
+    ENABLE_NORM_MODULE = ENABLE_NORM_MODULE or "norm" in LIGHTOP_MODULES
+    ENABLE_MQA_MODULE = ENABLE_MQA_MODULE or "mqa_logits" in LIGHTOP_MODULES
+
+ENABLE_ANY_SPLIT = ENABLE_NORM_MODULE or ENABLE_MQA_MODULE
+
 
 def _find_rocm_home() -> Optional[str]:
     rocm_home = os.environ.get('ROCM_HOME') or os.environ.get('ROCM_PATH')
@@ -530,6 +559,27 @@ class BuildReleaseExtension(BuildExtension):
         self.compiler.compile = unix_wrap_ninja_compile
         build_ext.build_extensions(self)
 
+    def build_extension(self, ext):
+        # Give every extension its own build-temp directory. The ninja writer
+        # above emits "build.ninja" and derives object paths from the source
+        # basename into self.build_temp; if several extensions share one
+        # build_temp (e.g. op_full and op_norm both compile
+        # csrc/kernels/rmsnorm/*.cu, or op_full and op_mqa_logits both compile
+        # the MQA family) they would clobber each other's build.ninja and .o
+        # files. Only nest when a split is enabled, so the default
+        # single-monolith build keeps its original build_temp layout.
+        if not ENABLE_ANY_SPLIT:
+            super().build_extension(ext)
+            return
+        orig_temp = self.build_temp
+        self.build_temp = os.path.join(
+            orig_temp, str(ext.name).replace('.', '__'))
+        try:
+            super().build_extension(ext)
+        finally:
+            self.build_temp = orig_temp
+
+
 def torch_version_over110():
     version=torch.__version__.split('.')
     return int(version[0])*100+int(version[1])>110
@@ -619,9 +669,9 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     
-    # 核心库：lightop.op
+    # 核心库：lightop.op (or lightop.op_full when any family split is enabled)
     ext_ops = extension(
-        name="lightop.op",
+        name=("lightop.op_full" if ENABLE_ANY_SPLIT else "lightop.op"),
         sources=op_files,
         include_dirs=include_dirs,
         libraries=['rocblas', 'hipblas', 'hipblaslt'],
@@ -640,6 +690,82 @@ def get_extensions():
         sources=[indexer_prep],
         extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "-ffp-contract=off"]},
     ))
+
+    if ENABLE_NORM_MODULE:
+        # Phase-0 pilot: norm family as an independent extension module.
+        # The kernel sources live in csrc/kernels/rmsnorm/ in this tree. Only
+        # the two self-contained rmsnorm .cu files plus the split binding
+        # are compiled here; csrc/kernels/rmsnorm/binding_norm.cpp is NOT
+        # picked up by op_full's globs (those only match *.cu), so there is no
+        # duplicate PYBIND11_MODULE symbol.
+        norm_include_dirs = list(include_dirs)
+        norm_include_dirs.append(os.path.abspath('./csrc/kernels/rmsnorm/'))
+        norm_extra_compile_args = {
+            k: list(v) for k, v in extra_compile_args.items()
+        }
+        norm_extra_compile_args.setdefault('cxx', [])
+        norm_extra_compile_args.setdefault('nvcc', [])
+        norm_extra_compile_args['cxx'].append('-DLIGHTOP_NORM_ONLY=1')
+        norm_extra_compile_args['nvcc'].append('-DLIGHTOP_NORM_ONLY=1')
+        extensions.append(extension(
+            name="lightop._ext.op_norm",
+            sources=[
+                "./csrc/kernels/rmsnorm/fuse_rms_add_opt.cu",
+                "./csrc/kernels/rmsnorm/fuse_rmsnorm_contiguous.cu",
+                "./csrc/kernels/rmsnorm/binding_norm.cpp",
+            ],
+            include_dirs=norm_include_dirs,
+            libraries=['rocblas', 'hipblas', 'hipblaslt'],
+            library_dirs=[os.path.join(rocm_home, 'lib')],
+            define_macros=define_macros,
+            extra_compile_args=norm_extra_compile_args,
+        ))
+
+    if ENABLE_MQA_MODULE:
+        # Phase-1 pilot: MQA logits family as an independent extension module.
+        # Dual-track: op_full keeps these sources and their pybind/export.cpp
+        # bindings until the pilot is verified on HCU; python/lightop/op.py
+        # routes MQA symbols to this module first. Sources, include dirs,
+        # libraries and compile flags mirror the monolith exactly, so every
+        # per-TU compile command line (and therefore the kernel binaries)
+        # stays unchanged. binding_mqa.cpp is a .cpp file outside the
+        # monolith's globs (which only match *.cu in the MQA dirs) and
+        # csrc/kernels/index_k_int8_dequant/*.cu is mirrored from the monolith,
+        # so no duplicate PYBIND11_MODULE symbol can leak into op_full.
+        mqa_files = (
+            glob.glob('./csrc/mqa_logits/*.cu') +
+            glob.glob('./csrc/mqa_logits/bf16/*.cu') +
+            glob.glob('./csrc/mqa_logits/fp8/*.cu') +
+            glob.glob('./csrc/mqa_logits/fp8_fp4/*.cu') +
+            glob.glob('./csrc/mqa_logits/int8/*.cu') +
+            glob.glob('./csrc/mqa_logits/paged/*.cu') +
+            glob.glob('./csrc/mqa_logits/sparse/*.cu') +
+            glob.glob('./csrc/kernels/index_k_int8_dequant/*.cu') +
+            ['./csrc/mqa_logits/binding_mqa.cpp']
+        )
+        mqa_extra_compile_args = {
+            k: list(v) for k, v in extra_compile_args.items()
+        }
+        extensions.append(extension(
+            name="lightop._ext.op_mqa_logits",
+            sources=mqa_files,
+            include_dirs=list(include_dirs),
+            libraries=['rocblas', 'hipblas', 'hipblaslt'],
+            library_dirs=[os.path.join(rocm_home, 'lib')],
+            define_macros=define_macros,
+            extra_compile_args=mqa_extra_compile_args,
+        ))
+
+    if LIGHTOP_MODULES:
+        # Selective developer build: keep only the requested split modules,
+        # skip the monolith and the standalone router/prep extensions.
+        _selected_names = {
+            "norm": "lightop._ext.op_norm",
+            "mqa_logits": "lightop._ext.op_mqa_logits",
+        }
+        keep = {_selected_names[k] for k in LIGHTOP_MODULES}
+        extensions = [ext for ext in extensions if ext.name in keep]
+
     return extensions
 
 def _get_pytorch_version():
