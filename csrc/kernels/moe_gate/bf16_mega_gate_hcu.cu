@@ -6,6 +6,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -15,9 +16,11 @@ namespace at {
 namespace native {
 namespace {
 
+#include "bf16_mega_gate_mls.cuh"
+
 // Four waves produce FP32 logits with the baseline K reduction order.
 // The last producer CTA uses all eight waves, two tokens per wave, for Top-K.
-template <int EXPERT_CAPACITY, int TOP_K, int HIDDEN = 0, bool PADDED = true>
+template <int EXPERT_CAPACITY, int TOP_K, int HIDDEN = 0, bool PADDED = true, bool USE_MLS = false>
 __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
     const BFloat16* __restrict__ x, const BFloat16* __restrict__ w,
     const float* __restrict__ bias, const bool* __restrict__ mask,
@@ -25,6 +28,8 @@ __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
     int* __restrict__ counters, float* __restrict__ weights,
     int64_t* __restrict__ ids, int m, int num_experts, int hidden_size,
     bool renormalize, float scale, bool apply_scale) {
+  static_assert(!USE_MLS || (EXPERT_CAPACITY == 384 && TOP_K == 6 &&
+                             HIDDEN == 5120 && !PADDED));
   constexpr int BN = 32, BM = 16, NT = BN / 16;
   const int experts = PADDED ? num_experts : EXPERT_CAPACITY;
   const int hidden = HIDDEN ? HIDDEN : hidden_size;
@@ -38,22 +43,58 @@ __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
   float4_t acc[NT];
 #pragma unroll
   for (int tile = 0; tile < NT; ++tile) acc[tile] = {0, 0, 0, 0};
-  if (wave < 4) {
-    for (int base = wave * 32; base < hidden; base += 128) {
-      const int offset = base + col_group * 8;
-      half4x2 av = {};
-      if (valid_row)
-        av = *reinterpret_cast<const half4x2*>(x + ar * hidden + offset);
-#pragma unroll
-      for (int tile = 0; tile < NT; ++tile) {
-        const int br = blockIdx.x * BN + tile * 16 + row;
-        half4x2 bv = {};
-        if (!PADDED || br < experts)
-          bv = *reinterpret_cast<const half4x2*>(w + br * hidden + offset);
-        // Swapping operands makes each fragment span four tokens, so the
-        // gate can load consecutive expert scores without a transpose pass.
-        builtin_amdgcn_mmac<false>(bv.data[0], av.data[0], acc[tile]);
-        builtin_amdgcn_mmac<false>(bv.data[1], av.data[1], acc[tile]);
+#if defined(__gfx938__)
+  // Wave-private tiles: X is 16x32 BF16 and W is 32x32 BF16.
+  // One stage is faster than two for this small producer tile.
+  __shared__ __align__(1024) short mls_tiles[USE_MLS ? 4 * 1536 : 1];
+  if (USE_MLS && blockIdx.y * BM + BM <= m) {
+    if constexpr (USE_MLS) {
+      if (wave < 4) {
+        short* tile = mls_tiles + wave * 1536;
+        auto issue = [&](int base) {
+          mega_gate_mls::load(x + blockIdx.y * BM * hidden + base, tile, hidden);
+          mega_gate_mls::load_w(w + blockIdx.x * BN * hidden + base, tile + 512, hidden);
+        };
+        issue(wave * 32);
+        for (int base = wave * 32; base < hidden; base += 128) {
+          mega_gate_mls::wait_load();
+          auto ar = mega_gate_mls::read(tile);
+          auto br0 = mega_gate_mls::read_direct(tile + 512);
+          auto br1 = mega_gate_mls::read_direct(tile + 1024);
+          mega_gate_mls::wait_read();
+          half4x2 av = mega_gate_mls::fragment(ar, lane);
+          half4x2 bv0 = mega_gate_mls::fragment_direct(br0, lane);
+          half4x2 bv1 = mega_gate_mls::fragment_direct(br1, lane);
+          // The DS reads are complete before this wave reuses its LDS region.
+          // Prefetch overlaps the current iteration's four MMAC instructions.
+          if (base + 128 < hidden) issue(base + 128);
+          builtin_amdgcn_mmac<false>(bv0.data[0], av.data[0], acc[0]);
+          builtin_amdgcn_mmac<false>(bv0.data[1], av.data[1], acc[0]);
+          builtin_amdgcn_mmac<false>(bv1.data[0], av.data[0], acc[1]);
+          builtin_amdgcn_mmac<false>(bv1.data[1], av.data[1], acc[1]);
+        }
+      }
+    }
+  } else
+#endif
+  {
+    if (wave < 4) {
+      for (int base = wave * 32; base < hidden; base += 128) {
+        const int offset = base + col_group * 8;
+        half4x2 av = {};
+        if (valid_row)
+          av = *reinterpret_cast<const half4x2*>(x + ar * hidden + offset);
+  #pragma unroll
+        for (int tile = 0; tile < NT; ++tile) {
+          const int br = blockIdx.x * BN + tile * 16 + row;
+          half4x2 bv = {};
+          if (!PADDED || br < experts)
+            bv = *reinterpret_cast<const half4x2*>(w + br * hidden + offset);
+          // Swapping operands makes each fragment span four tokens, so the
+          // gate can load consecutive expert scores without a transpose pass.
+          builtin_amdgcn_mmac<false>(bv.data[0], av.data[0], acc[tile]);
+          builtin_amdgcn_mmac<false>(bv.data[1], av.data[1], acc[tile]);
+        }
       }
     }
   }
@@ -138,8 +179,8 @@ void launch_router(const Tensor& x, const Tensor& w, const Tensor& bias,
   const int m = x.size(0), experts = w.size(0), hidden = x.size(1);
   const dim3 grid((experts + 31) / 32, (m + 15) / 16);
   const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
-#define LAUNCH_ROUTER(H, PAD)                                               \
-  bf16_mega_gate_kernel<CAPACITY, TOP_K, H, PAD><<<grid, 512, 0, stream>>>( \
+#define LAUNCH_ROUTER(H, PAD, MLS)                                               \
+  bf16_mega_gate_kernel<CAPACITY, TOP_K, H, PAD, MLS><<<grid, 512, 0, stream>>>( \
       x.data_ptr<BFloat16>(), w.data_ptr<BFloat16>(),                       \
       bias.defined() ? bias.data_ptr<float>() : nullptr,                    \
       mask.defined() ? mask.data_ptr<bool>() : nullptr,                     \
@@ -149,11 +190,18 @@ void launch_router(const Tensor& x, const Tensor& w, const Tensor& bias,
       apply_scale)
   if constexpr (CAPACITY == 384 && TOP_K == 6) {
     if (experts == CAPACITY && hidden == 5120) {
-      LAUNCH_ROUTER(5120, false);
+      // Keep small sizes and other architectures on the original path.
+      const auto* props = at::cuda::getDeviceProperties(x.get_device());
+      if (m >= 128 &&
+          std::strncmp(props->gcnArchName, "gfx938", 6) == 0) {
+        LAUNCH_ROUTER(5120, false, true);
+      } else {
+        LAUNCH_ROUTER(5120, false, false);
+      }
       return;
     }
   }
-  LAUNCH_ROUTER(0, true);
+  LAUNCH_ROUTER(0, true, false);
 #undef LAUNCH_ROUTER
 }
 
