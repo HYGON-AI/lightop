@@ -696,3 +696,57 @@ if __name__ == "__main__":
     test_dedup_stale_owner_map_is_ignored()
     test_dedup_cuda_graph_replay()
     print("DSV4_LIGHTOP_GATHER_CORRECT=True")
+
+
+@pytest.mark.parametrize("group", [1, 5, 6])
+@pytest.mark.parametrize("extra_page", [2, 64, 128, 256])
+def test_compact_query_reuse_matches_independent_gather(group, extra_page):
+    from lightop.kvcache import dsv4_gather_upconvert_compact_k_cache_paged
+
+    q, ak, bk = group * 2, 8, 4
+    a = _make_cache(1, 256, seed=31)
+    b = _make_cache(1, extra_page, seed=37)
+    def packed(raw, page):
+        return torch.as_strided(raw, (1, page, 1, 584),
+                                (raw.stride(0), 584, 584, 1))
+    ai = torch.arange(ak, device="cuda", dtype=torch.int32).repeat(q, 1)
+    bi = torch.arange(bk, device="cuda", dtype=torch.int32).repeat(q, 1)
+    if group == 6:
+        for i in range(q):
+            ai[i] = ai[i].roll(-(i % group))
+    # Equal indices exercise sharing; mismatches must gather independently.
+    ai[-1, 0] = 17
+    ai[-1, 1] = -1
+    bi[-1, 0] = extra_page + 1
+    al = torch.full((q,), ak, device="cuda", dtype=torch.int32)
+    bl = torch.full((q,), bk, device="cuda", dtype=torch.int32)
+    al[-1], bl[-1] = ak - 2, bk - 1
+    av, _ = _reference(a, ai, al, 256)
+    bv, _ = _reference(b, bi, bl, extra_page)
+    out = torch.full((q, ak + bk, 1, 512), float("nan"), device="cuda", dtype=torch.bfloat16)
+    ids = torch.full((q, 1, ak + bk), -1, device="cuda", dtype=torch.int32)
+    dsv4_gather_upconvert_compact_k_cache_paged(
+        packed(a, 256), ai, al, packed(b, extra_page), bi, bl,
+        out, ids, extra_page, reuse_group=group,
+    )
+    for row in range(q):
+        n, m = int(al[row]), int(bl[row])
+        expected = torch.cat((av[row, :n], bv[row, :m]))
+        selected = out.view(-1, 1, 512)[ids[row, 0, :n + m].long()]
+        torch.testing.assert_close(selected, expected, rtol=0, atol=0)
+        assert (ids[row, 0, n + m:] == 0).all()
+
+
+def test_query_reuse_rejects_too_few_swa_columns():
+    from lightop.kvcache import dsv4_gather_upconvert_compact_k_cache_paged
+
+    cache = torch.zeros((1, 256, 1, 584), device="cuda", dtype=torch.uint8)
+    indices = torch.zeros((6, 1), device="cuda", dtype=torch.int32)
+    lengths = torch.ones(6, device="cuda", dtype=torch.int32)
+    out = torch.empty((6, 1, 1, 512), device="cuda", dtype=torch.bfloat16)
+    compact = torch.empty((6, 1, 1), device="cuda", dtype=torch.int32)
+    with pytest.raises(RuntimeError, match="at least five SWA columns"):
+        dsv4_gather_upconvert_compact_k_cache_paged(
+            cache, indices, lengths, cache, indices[:, :0], lengths * 0,
+            out, compact, 256, reuse_group=6,
+        )

@@ -862,6 +862,12 @@ void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& out,
     int64_t page_size,
     std::optional<torch::Tensor> valid_count);
+void dsv4_gather_upconvert_combined_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t);
+void dsv4_gather_upconvert_query_reuse_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t, int64_t);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -1955,6 +1961,10 @@ m.def(
      "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
      py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"),
      py::arg("valid_count") = py::none());
+ m.def("dsv4_gather_upconvert_combined_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_combined_k_cache_paged);
+ m.def("dsv4_gather_upconvert_query_reuse_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_query_reuse_k_cache_paged);
  m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,
