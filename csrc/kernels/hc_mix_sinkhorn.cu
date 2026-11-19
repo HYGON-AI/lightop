@@ -53,9 +53,48 @@ __device__ __forceinline__ float bf(short v) {
                          << 16);
 }
 
+#if defined(__gfx938__)
+using U4 = unsigned __attribute__((ext_vector_type(4)));
+using I4 = int __attribute__((ext_vector_type(4)));
+// B16 transpose layout supplies two consecutive original K=16 fragments.
+__device__ __forceinline__ void mls_load(const BFloat16 * src, short * dst) {
+  const auto address = reinterpret_cast<uintptr_t>(src);
+  const U4 desc = {unsigned(__builtin_amdgcn_readfirstlane(unsigned(address))),
+                  unsigned(__builtin_amdgcn_readfirstlane(unsigned(address >> 32) & 0xffffu)), K, 0};
+  const unsigned offset = __builtin_amdgcn_readfirstlane(
+      unsigned(reinterpret_cast<uintptr_t>(dst))) | 0x80000000u;
+  // Explicit SGPR operands avoid the current DTK builtin's address allocation.
+  asm volatile("s_nop 4\n\tmatrix_load_32x16_b16 %0, %1, moffset:0 t lds"
+               :: "s"(desc), "s"(offset) : "memory");
+}
+__device__ __forceinline__ I4 mls_read(short * src) {
+  const unsigned offset = __builtin_amdgcn_readfirstlane(
+      unsigned(reinterpret_cast<uintptr_t>(src)));
+  I4 result;
+  asm volatile("s_add_u32 m0, %1, 0x80000000\n\ts_nop 0\n\t"
+               "ds_read_matrix_trans_format %0, m0 offset:0 element:0x2 row:0x2 col:0x1 alt:0x0"
+               : "=v"(result) : "s"(offset) : "m0", "memory");
+  return result;
+}
+__device__ __forceinline__ B4 mls_fragment(I4 v, int half) {
+  const int a = v[half * 2], b = v[half * 2 + 1];
+  return B4{short(a), short(a >> 16), short(b), short(b >> 16)};
+}
+__device__ __forceinline__ void mls_wait_load() {
+  __builtin_amdgcn_sched_barrier(0);
+  asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
+  __builtin_amdgcn_sched_barrier(0);
+}
+__device__ __forceinline__ void mls_wait_read() {
+  __builtin_amdgcn_sched_barrier(0);
+  asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+  __builtin_amdgcn_sched_barrier(0);
+}
+#endif
+
 // Two N waves, KG K groups. The group/slice reduction order is independent
 // of batch padding within each specialization. X square sum is computed once.
-template <bool TF, int KG, int RT, int S>
+template <bool TF, int KG, int RT, int S, bool MLS = false>
 __global__ void
 hc_parts_project(const BFloat16 *__restrict__ x, const void *__restrict__ w0,
                  const void *__restrict__ w1, const void *__restrict__ w2,
@@ -68,92 +107,181 @@ hc_parts_project(const BFloat16 *__restrict__ x, const void *__restrict__ w0,
   constexpr int E = TF ? 2 : 4, STEP = 4 * E, KS = K / S / KG;
   F4 hi[RT] = {}, lo[RT] = {}, mid[RT] = {};
   float sq[RT] = {};
-  for (int kb = kw * KS; kb < (kw + 1) * KS; kb += STEP) {
-    int kk = blockIdx.y * (K / S) + kb + lg * E, wr = nw * 16 + lr;
-    F2 th = {}, tl = {};
-    B4 bh = {}, bm = {}, bl = {};
-    if constexpr (TF) {
-      F2 hv = {}, lv = {};
-      if (wr < N) {
-        const float *hp = static_cast<const float *>(w0) + wr * K + kk;
-        const float *lp = static_cast<const float *>(w1) + wr * K + kk;
-        if ((reinterpret_cast<uintptr_t>(hp) & 7) == 0)
-          hv = *reinterpret_cast<const F2 *>(hp);
-        else
-          hv = F2{hp[0], hp[1]};
-        if ((reinterpret_cast<uintptr_t>(lp) & 7) == 0)
-          lv = *reinterpret_cast<const F2 *>(lp);
-        else
-          lv = F2{lp[0], lp[1]};
-      }
-#pragma unroll
-      for (int j = 0; j < 2; j++) {
-        th[j] = __shfl(hv[j], src, 64);
-        tl[j] = tf32(__shfl(lv[j], src, 64));
-      }
-    } else {
-      const BFloat16 *weights[3] = {static_cast<const BFloat16 *>(w0),
+  struct ReductionStorage {
+    F4 hs[KG > 1 ? KG - 1 : 1][RT][128];
+    F4 ls[KG > 1 ? KG - 1 : 1][RT][128];
+    F4 ms[TF ? 1 : (KG > 1 ? KG - 1 : 1)][RT][128];
+    float qs[KG > 1 ? KG - 1 : 1][RT][16];
+  };
+  union SharedStorage {
+    ReductionStorage reduce;
+    short tiles[MLS ? (2 * KG * RT + 3 * KG) * 512 : 1];
+  };
+  __shared__ __align__(1024) SharedStorage shared;
+#if defined(__gfx938__)
+  short * tiles = shared.tiles;
+  if (MLS && !TF && (int64_t(blockIdx.x) + 1) * (16 * RT) <= m) {
+    if constexpr (MLS && !TF) {
+      short * xb = tiles + wave * RT * 512;
+      short * wb = tiles + 2 * KG * RT * 512 + kw * 3 * 512;
+      const BFloat16 * weights[3] = {static_cast<const BFloat16 *>(w0),
                                     static_cast<const BFloat16 *>(w1),
                                     static_cast<const BFloat16 *>(w2)};
-      B4 ww[3] = {};
+      for (int kb = kw * KS; kb < (kw + 1) * KS; kb += 32) {
+        const int kbase = blockIdx.y * (K / S) + kb;
 #pragma unroll
-      for (int c = 0; c < 3; c++) {
-        unsigned a = 0, b = 0;
+        for (int rt = 0; rt < RT; ++rt)
+          mls_load(x + (int64_t(blockIdx.x) * (16 * RT) + rt * 16) * K + kbase,
+                   xb + rt * 512);
+        // Only the first N wave has sixteen valid weight rows.
+        if (nw == 0) {
+#pragma unroll
+          for (int c = 0; c < 3; ++c) mls_load(weights[c] + kbase, wb + c * 512);
+        }
+        mls_wait_load();
+        I4 xv[RT], wv[3] = {};
+#pragma unroll
+        for (int rt = 0; rt < RT; ++rt) xv[rt] = mls_read(xb + rt * 512);
+        if (nw == 0) {
+#pragma unroll
+          for (int c = 0; c < 3; ++c) wv[c] = mls_read(wb + c * 512);
+        }
+        mls_wait_read();
+        // Process both K halves in exactly the original component/square order.
+#pragma unroll
+        for (int half = 0; half < 2; ++half) {
+          B4 ww[3] = {};
+          if (nw == 0) {
+#pragma unroll
+            for (int c = 0; c < 3; ++c) ww[c] = mls_fragment(wv[c], half);
+          } else {
+            const int wr = nw * 16 + lr, kk = kbase + half * 16 + lg * 4;
+#pragma unroll
+            for (int c = 0; c < 3; ++c) {
+              unsigned a = 0, b = 0;
+              if (wr < N) {
+                const BFloat16 * ptr = weights[c] + wr * K + kk;
+                a = unsigned(ptr[0].x) | (unsigned(ptr[1].x) << 16);
+                b = unsigned(ptr[2].x) | (unsigned(ptr[3].x) << 16);
+              }
+              a = __shfl(a, src, 64); b = __shfl(b, src, 64);
+              ww[c] = B4{short(a), short(a >> 16), short(b), short(b >> 16)};
+            }
+          }
+#pragma unroll
+          for (int rt = 0; rt < RT; ++rt) {
+            B4 bx = mls_fragment(xv[rt], half);
+#pragma unroll
+            for (int j = 0; j < 4; ++j) {
+              float f = bf(bx[j]);
+              if (nw == 0) sq[rt] += f * f;
+            }
+            hi[rt] = mma(bx, ww[0], hi[rt]);
+            mid[rt] = mma(bx, ww[1], mid[rt]);
+            lo[rt] = mma(bx, ww[2], lo[rt]);
+          }
+        }
+      }
+    }
+  } else
+#endif
+  {
+    for (int kb = kw * KS; kb < (kw + 1) * KS; kb += STEP) {
+      int kk = blockIdx.y * (K / S) + kb + lg * E, wr = nw * 16 + lr;
+      F2 th = {}, tl = {};
+      B4 bh = {}, bm = {}, bl = {};
+      if constexpr (TF) {
+        F2 hv = {}, lv = {};
         if (wr < N) {
-          const BFloat16 *ptr = weights[c] + wr * K + kk;
+          const float *hp = static_cast<const float *>(w0) + wr * K + kk;
+          const float *lp = static_cast<const float *>(w1) + wr * K + kk;
+          if ((reinterpret_cast<uintptr_t>(hp) & 7) == 0)
+            hv = *reinterpret_cast<const F2 *>(hp);
+          else
+            hv = F2{hp[0], hp[1]};
+          if ((reinterpret_cast<uintptr_t>(lp) & 7) == 0)
+            lv = *reinterpret_cast<const F2 *>(lp);
+          else
+            lv = F2{lp[0], lp[1]};
+        }
+  #pragma unroll
+        for (int j = 0; j < 2; j++) {
+          th[j] = __shfl(hv[j], src, 64);
+          tl[j] = tf32(__shfl(lv[j], src, 64));
+        }
+      } else {
+        const BFloat16 *weights[3] = {static_cast<const BFloat16 *>(w0),
+                                      static_cast<const BFloat16 *>(w1),
+                                      static_cast<const BFloat16 *>(w2)};
+        B4 ww[3] = {};
+  #pragma unroll
+        for (int c = 0; c < 3; c++) {
+          unsigned a = 0, b = 0;
+          if (wr < N) {
+            const BFloat16 *ptr = weights[c] + wr * K + kk;
+            a = unsigned(ptr[0].x) | (unsigned(ptr[1].x) << 16);
+            b = unsigned(ptr[2].x) | (unsigned(ptr[3].x) << 16);
+          }
+          a = __shfl(a, src, 64);
+          b = __shfl(b, src, 64);
+          ww[c] = B4{short(a), short(a >> 16), short(b), short(b >> 16)};
+        }
+        bh = ww[0];
+        bm = ww[1];
+        bl = ww[2];
+      }
+  #pragma unroll
+      for (int rt = 0; rt < RT; rt++) {
+        int64_t row = int64_t(blockIdx.x) * (16 * RT) + rt * 16 + lr;
+        F2 tx = {};
+        B4 bx = {};
+        unsigned a = 0, b = 0;
+        if (row < m) {
+          const BFloat16 *ptr = x + row * K + kk;
           a = unsigned(ptr[0].x) | (unsigned(ptr[1].x) << 16);
-          b = unsigned(ptr[2].x) | (unsigned(ptr[3].x) << 16);
+          if constexpr (!TF)
+            b = unsigned(ptr[2].x) | (unsigned(ptr[3].x) << 16);
         }
         a = __shfl(a, src, 64);
-        b = __shfl(b, src, 64);
-        ww[c] = B4{short(a), short(a >> 16), short(b), short(b >> 16)};
-      }
-      bh = ww[0];
-      bm = ww[1];
-      bl = ww[2];
-    }
-#pragma unroll
-    for (int rt = 0; rt < RT; rt++) {
-      int64_t row = int64_t(blockIdx.x) * (16 * RT) + rt * 16 + lr;
-      F2 tx = {};
-      B4 bx = {};
-      unsigned a = 0, b = 0;
-      if (row < m) {
-        const BFloat16 *ptr = x + row * K + kk;
-        a = unsigned(ptr[0].x) | (unsigned(ptr[1].x) << 16);
-        if constexpr (!TF)
-          b = unsigned(ptr[2].x) | (unsigned(ptr[3].x) << 16);
-      }
-      a = __shfl(a, src, 64);
-      if constexpr (TF) {
-        tx = F2{bf(short(a)), bf(short(a >> 16))};
-        if (nw == 0)
-          sq[rt] += tx[0] * tx[0] + tx[1] * tx[1];
-      } else {
-        b = __shfl(b, src, 64);
-        bx = B4{short(a), short(a >> 16), short(b), short(b >> 16)};
-#pragma unroll
-        for (int j = 0; j < 4; j++) {
-          float f = bf(bx[j]);
+        if constexpr (TF) {
+          tx = F2{bf(short(a)), bf(short(a >> 16))};
           if (nw == 0)
-            sq[rt] += f * f;
+            sq[rt] += tx[0] * tx[0] + tx[1] * tx[1];
+        } else {
+          b = __shfl(b, src, 64);
+          bx = B4{short(a), short(a >> 16), short(b), short(b >> 16)};
+  #pragma unroll
+          for (int j = 0; j < 4; j++) {
+            float f = bf(bx[j]);
+            if (nw == 0)
+              sq[rt] += f * f;
+          }
         }
-      }
 
-      if constexpr (TF) {
-        hi[rt] = mma(tx, th, hi[rt]);
-        lo[rt] = mma(tx, tl, lo[rt]);
-      } else {
-        hi[rt] = mma(bx, bh, hi[rt]);
-        mid[rt] = mma(bx, bm, mid[rt]);
-        lo[rt] = mma(bx, bl, lo[rt]);
+        if constexpr (TF) {
+          hi[rt] = mma(tx, th, hi[rt]);
+          lo[rt] = mma(tx, tl, lo[rt]);
+        } else {
+          hi[rt] = mma(bx, bh, hi[rt]);
+          mid[rt] = mma(bx, bm, mid[rt]);
+          lo[rt] = mma(bx, bl, lo[rt]);
+        }
       }
     }
   }
-  __shared__ F4 hs[KG > 1 ? KG - 1 : 1][RT][128],
-      ls[KG > 1 ? KG - 1 : 1][RT][128],
-      ms[TF ? 1 : (KG > 1 ? KG - 1 : 1)][RT][128];
-  __shared__ float qs[KG > 1 ? KG - 1 : 1][RT][16];
+  // All wave-private MLS reads must finish before recycling LDS for reduction.
+  if constexpr (MLS)
+    __syncthreads();
+  // Keep the original storage for fallback/TF32 specializations. Unused
+  // declarations are eliminated; TF32 must not reserve the BF16 middle part.
+  __shared__ F4 base_hs[KG > 1 ? KG - 1 : 1][RT][128],
+      base_ls[KG > 1 ? KG - 1 : 1][RT][128],
+      base_ms[TF ? 1 : (KG > 1 ? KG - 1 : 1)][RT][128];
+  __shared__ float base_qs[KG > 1 ? KG - 1 : 1][RT][16];
+  auto *hs = MLS ? shared.reduce.hs : base_hs;
+  auto *ls = MLS ? shared.reduce.ls : base_ls;
+  auto *ms = MLS ? shared.reduce.ms : base_ms;
+  auto *qs = MLS ? shared.reduce.qs : base_qs;
 #pragma unroll
   for (int rt = 0; rt < RT; rt++) {
     if constexpr (KG > 1) {
@@ -258,7 +386,7 @@ __global__ void hc_reduce_sinkhorn(const float *part, const float *sq,
   if (lane < 16)
     comb[row * 16 + lane] = c;
 }
-template <bool TF, int S, int KG, int RT>
+template <bool TF, int S, int KG, int RT, bool MLS = false>
 void launch(const Tensor &x, const std::vector<Tensor> &parts,
             const Tensor &scale, const Tensor &base, int64_t iters,
             double rms, double eps, const Tensor &pre,
@@ -269,7 +397,7 @@ void launch(const Tensor &x, const std::vector<Tensor> &parts,
   auto stream = at::cuda::getCurrentCUDAStream();
   const void *w0 = parts[0].data_ptr(), *w1 = parts[1].data_ptr();
   const void *w2 = TF ? nullptr : parts[2].data_ptr();
-  hc_parts_project<TF, KG, RT, S>
+  hc_parts_project<TF, KG, RT, S, MLS>
       <<<dim3((m + 16 * RT - 1) / (16 * RT), S), 128 * KG, 0, stream>>>(
           x.data_ptr<BFloat16>(), w0, w1, w2, p.data_ptr<float>(),
           sq.data_ptr<float>(), m);
@@ -331,6 +459,12 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
        comb = at::empty({m, 4, 4}, opts);
   if (!m)
     return {pre, post, comb};
+  // MLS amortizes its staging cost for larger batches; tails use original loads.
+  const bool use_mls = !tf && arch == "gfx938" && m >= 512 &&
+      ((reinterpret_cast<uintptr_t>(x.data_ptr()) |
+        reinterpret_cast<uintptr_t>(parts[0].data_ptr()) |
+        reinterpret_cast<uintptr_t>(parts[1].data_ptr()) |
+        reinterpret_cast<uintptr_t>(parts[2].data_ptr())) & 15u) == 0;
   // Offline-tuned gfx938 intervals; gfx928/gfx936 use the baseline configuration.
   if (tf) {
     launch<true, 80, 4, 1>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
@@ -344,6 +478,8 @@ std::tuple<Tensor, Tensor, Tensor> run(const Tensor &x,
     launch<false, 80, 2, 2>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
   } else if (m <= 256) {
     launch<false, 40, 2, 2>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
+  } else if (use_mls) {
+    launch<false, 80, 2, 2, true>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
   } else {
     launch<false, 80, 2, 2>(x, parts, scale, base, iters, rms, eps, pre, post, comb);
   }
