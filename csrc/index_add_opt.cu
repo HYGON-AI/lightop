@@ -970,12 +970,6 @@ static bool index_add_probe_enabled() {
     return !(env[0] == '0' && env[1] == '\0');
 }
 
-static bool index_add_strict_duplicates() {
-    // When set, never assume injectivity from equal batch sizes; always probe/atomic.
-    const char* env = lightop_getenv_dual("LIGHTOP_INDEX_ADD_STRICT", "CUSTOM_OPS_INDEX_ADD_STRICT");
-    return env != nullptr && env[0] == '1' && env[1] == '\0';
-}
-
 // Probe is ~10-20us (memset+mark+pinned D2H). Skip only for tiny ops where atomic is fine.
 static bool index_add_probe_worth_it(int64_t src_batch, int64_t dim, int64_t elem_size) {
     // Traffic ≈ 3 * src_batch * dim * elem at ~1500 GB/s.
@@ -1070,20 +1064,18 @@ void index_add_opt_impl(torch::Tensor& dst, torch::Tensor index, torch::Tensor s
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const int64_t elem_size = dst.element_size();
 
-    // assume_unique=True → fast unique path.
-    // assume_unique=False:
-    //   - src_batch == dst_batch (micro_perf permutations): use unique RMW directly
-    //     unless CUSTOM_OPS_INDEX_ADD_STRICT=1 (then probe / atomics).
-    //   - otherwise probe when injective is possible and problem is large enough;
-    //     collisions → vectorized atomic path (fp32 atomicAdd / half CAS).
+    // assume_unique=True → fast unique path (caller guarantees injective index).
+    // assume_unique=False → only take the unique RMW path when the device-side
+    //   probe actually confirms no duplicate indices; equal src/dst batch size
+    //   does not by itself imply the index is a permutation (duplicates with
+    //   src_batch == dst_batch are a legal input whose repeats must still
+    //   accumulate), so it must never be treated as proof of uniqueness.
+    //   Otherwise fall back to the vectorized atomic path (fp32 atomicAdd /
+    //   half CAS), which is correct regardless of duplicates.
     bool unique = assume_unique;
-    if (!unique) {
-        if (!index_add_strict_duplicates() && src_batch == dst_batch) {
-            unique = true;
-        } else if (index_add_probe_enabled() &&
-                   index_add_probe_worth_it(src_batch, dim, elem_size)) {
-            unique = probe_indices_unique(index, src_batch, dst_batch, stream);
-        }
+    if (!unique && index_add_probe_enabled() &&
+        index_add_probe_worth_it(src_batch, dim, elem_size)) {
+        unique = probe_indices_unique(index, src_batch, dst_batch, stream);
     }
 
     if (dst.scalar_type() == at::kFloat) {

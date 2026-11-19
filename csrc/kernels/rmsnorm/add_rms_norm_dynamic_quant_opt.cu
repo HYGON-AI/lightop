@@ -299,9 +299,6 @@ __global__ void addrmsnormdynamicquant_kernel_hs5120_norm(
         float val_add = static_cast<float>(x_row[i]) + static_cast<float>(res_row[i]);
         local_sum_sq += val_add * val_add;
         float val_norm = val_add * norm_weight[i];
-        
-        an_row[i] = static_cast<at::BFloat16>(val_norm);
-        
         float val_smooth = val_norm * smooth_scale[i];
         local_max_abs = fmaxf(local_max_abs, fabsf(val_smooth));
     }
@@ -343,6 +340,7 @@ __global__ void addrmsnormdynamicquant_kernel_hs5120_norm(
         if (i < hidden_size) {
             float val_add = static_cast<float>(x_row[i]) + static_cast<float>(res_row[i]);
             float val_norm = val_add * rms * norm_weight[i];
+            an_row[i] = static_cast<at::BFloat16>(val_norm);
             float val_smooth = val_norm * smooth_scale[i];
             float quant_val = __builtin_roundf(val_smooth * scale);
             quant_val = fminf(quant_val, 127.0f);
@@ -627,6 +625,7 @@ __global__ void addrmsnormdynamicquant_kernel_hs5120_pro_norm(
     // --- 寄存器缓存区 (关键优化) ---
     // 存储转换后的 float 数据，避免二次转换和二次读取
     float r_val_smooth[10];
+    float r_val_norm[10];
 
     // --- 阶段 1: 加载与统计 ---
     /*
@@ -652,8 +651,7 @@ __global__ void addrmsnormdynamicquant_kernel_hs5120_pro_norm(
         local_sum_sq += val_add * val_add;
 
         float val_norm = val_add * norm_weight[base_idx + k];
-        
-        an_row[base_idx + k] = static_cast<at::BFloat16>(val_norm);
+        r_val_norm[k] = val_norm; // 存入寄存器，待 RMS 算出后再乘以 rms 写回 after_norm
 
         float val_smooth = val_norm * smooth_scale[base_idx + k];
         r_val_smooth[k] = val_smooth; // 存入寄存器
@@ -704,10 +702,12 @@ __global__ void addrmsnormdynamicquant_kernel_hs5120_pro_norm(
 
     #pragma unroll
     for (int k = 0; k < 10; k++) {
+        an_row[base_idx + k] = static_cast<at::BFloat16>(r_val_norm[k] * rms);
+
         float quant_val = __builtin_roundf(r_val_smooth[k] * rms * scale);
         quant_val = fminf(quant_val, 127.0f);
         quant_val = fmaxf(quant_val, -127.0f);
-        
+
         q_row[base_idx+k] = static_cast<int8_t>(quant_val);
     }
 }
@@ -994,6 +994,7 @@ __global__ void addrmsnormdynamicquant_kernel_hs4096_norm(
     // --- 寄存器缓存区 (关键优化) ---
     // 存储转换后的 float 数据，避免二次转换和二次读取
     float r_val_smooth[8];
+    float r_val_norm[8];
 
     // --- 阶段 1: 加载与统计 ---
     /*
@@ -1019,8 +1020,7 @@ __global__ void addrmsnormdynamicquant_kernel_hs4096_norm(
         local_sum_sq += val_add * val_add;
 
         float val_norm = val_add * norm_weight[base_idx + k];
-        
-        an_row[base_idx + k] = static_cast<at::BFloat16>(val_norm);
+        r_val_norm[k] = val_norm; // 存入寄存器，待 RMS 算出后再乘以 rms 写回 after_norm
 
         float val_smooth = val_norm * smooth_scale[base_idx + k];
         r_val_smooth[k] = val_smooth; // 存入寄存器
@@ -1047,22 +1047,22 @@ __global__ void addrmsnormdynamicquant_kernel_hs4096_norm(
             total_sum_sq += s_warp_sum[i];
             total_max = fmaxf(total_max, s_warp_max[i]);
         }
-        
+
         float rms = rsqrtf(total_sum_sq / static_cast<float>(hidden_size) + eps);
         float actual_max = total_max * rms;
-        
+
         float scale_val = 1.0f;
         if (actual_max > 0.0f) {
             scale_val = actual_max / 127.0f;
         }
-        
+
         per_token_scale[row_idx] = scale_val;
         s_final_rms = rms;
         s_final_scale = scale_val;
     }
-    
+
     __syncthreads();
-    
+
     float rms = s_final_rms;
     float scale = 1.0f / s_final_scale;
 
@@ -1071,10 +1071,12 @@ __global__ void addrmsnormdynamicquant_kernel_hs4096_norm(
 
     #pragma unroll
     for (int k = 0; k < 8; k++) {
+        an_row[base_idx + k] = static_cast<at::BFloat16>(r_val_norm[k] * rms);
+
         float quant_val = __builtin_roundf(r_val_smooth[k] * rms * scale);
         quant_val = fminf(quant_val, 127.0f);
         quant_val = fmaxf(quant_val, -127.0f);
-        
+
         q_row[base_idx+k] = static_cast<int8_t>(quant_val);
     }
 }
@@ -1313,7 +1315,6 @@ __global__ void addrmsnormdynamicquant_kernel_generic_norm(
         float val_add = static_cast<float>(x_row[i]) + static_cast<float>(res_row[i]);
         local_sum_sq += val_add * val_add;
         float val_norm = val_add * norm_weight[i];
-        an_row[i] = static_cast<at::BFloat16>(val_norm);
         float val_smooth = val_norm * smooth_scale[i];
         local_max_abs = fmaxf(local_max_abs, fabsf(val_smooth));
     }
@@ -1351,6 +1352,7 @@ __global__ void addrmsnormdynamicquant_kernel_generic_norm(
     for (int64_t i = tid; i < hidden_size; i += blockDim.x) {
         float val_add = static_cast<float>(x_row[i]) + static_cast<float>(res_row[i]);
         float val_norm = val_add * rms * norm_weight[i];
+        an_row[i] = static_cast<at::BFloat16>(val_norm);
         float val_smooth = val_norm * smooth_scale[i];
         float quant_val = __builtin_roundf(val_smooth * scale);
         quant_val = fminf(quant_val, 127.0f);

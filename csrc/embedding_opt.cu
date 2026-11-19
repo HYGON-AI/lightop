@@ -237,6 +237,8 @@ torch::Tensor embedding_opt(
                 "index (src) must be a 1D int64 tensor");
     TORCH_CHECK(dst.dim() == 2 && dst.size(1) == weight.size(1),
                 "dst shape mismatch");
+    TORCH_CHECK(dst.size(0) == src.size(0),
+                "dst row count must match the number of indices");
     TORCH_CHECK(dst.scalar_type() == weight.scalar_type(),
                 "dst and weight must have the same dtype");
 
