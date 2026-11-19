@@ -23,6 +23,34 @@ def get_dtk_version(ROCM_HOME):
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
 op = importlib.import_module('.op', __name__)
 
+_OP_TO_MODULE = {
+    "mqa_logits": "._mqa_logits",
+}
+_LOADED_SUBMODULES = set()
+
+
+def _install_op_redirection(op_module):
+    def _op_getattr(name: str):
+        submod_name = _OP_TO_MODULE.get(name)
+        if submod_name is not None and submod_name not in _LOADED_SUBMODULES:
+            submod = importlib.import_module(submod_name, __name__)
+            _LOADED_SUBMODULES.add(submod_name)
+            for attr_name, attr_val in submod.__dict__.items():
+                if not attr_name.startswith("__"):
+                    setattr(op_module, attr_name, attr_val)
+            if name in op_module.__dict__:
+                return op_module.__dict__[name]
+        raise AttributeError(f"module '{op_module.__name__}' has no attribute '{name}'")
+
+    def _op_dir():
+        return sorted(set(op_module.__dict__.keys()) | set(_OP_TO_MODULE.keys()))
+
+    op_module.__getattr__ = _op_getattr
+    op_module.__dir__ = _op_dir
+
+
+_install_op_redirection(op)
+
 
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR
 from .rmsnorm import RMSNorm, RMSNormTorch, RMSNormDropout, RMSNormAddDropout, RMSNormAddDropoutBias, RMSNormAdd,rmsnorm_forward,rmsnorm_backward,rms_norm_dynamic_per_token_quant,fused_rms_norm_contiguous,fused_rms_norm_rope_contiguous,rms_norm_per_token_fp8_quant

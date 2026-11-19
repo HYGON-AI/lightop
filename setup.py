@@ -4,6 +4,8 @@
 import torch
 from typing import List, Optional, Union
 import glob
+import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -185,7 +187,12 @@ def _write_ninja_file(path, cflags, post_cflags, cuda_cflags, cuda_post_cflags, 
         nvcc_gendeps = ''
         required_cuda_version = version.parse('10.2')
         has_cuda_version = torch.version.cuda is not None
-        if has_cuda_version and version.parse(torch.version.cuda) >= required_cuda_version:
+        if IS_HIP_EXTENSION:
+            # hipcc (clang) 支持 -MMD -MF 生成头文件依赖，实现模块内文件级增量编译
+            nvcc_gendeps = '-MMD -MF $out.d'
+            cuda_compile_rule.append('  depfile = $out.d')
+            cuda_compile_rule.append('  deps = gcc')
+        elif has_cuda_version and version.parse(torch.version.cuda) >= required_cuda_version:
             cuda_compile_rule.append('  depfile = $out.d')
             cuda_compile_rule.append('  deps = gcc')
         cuda_compile_rule.append(
@@ -278,9 +285,81 @@ def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, p
 
 min_supported_cpython = "0x03090000"  # Python 3.9 hexcode
 
+
+def _expand_globs(patterns: List[str]) -> List[str]:
+    files = []
+    for pat in patterns:
+        files.extend(glob.glob(pat, recursive=True))
+    return sorted({os.path.normpath(p) for p in files if os.path.isfile(p)})
+
+
+def _compute_module_fingerprint(ext, header_files: List[str], env_meta: dict) -> str:
+    h = hashlib.sha256()
+    meta = {
+        "name": ext.name,
+        "define_macros": ext.define_macros,
+        "libraries": ext.libraries,
+        "extra_compile_args": ext.extra_compile_args,
+        "env": env_meta,
+    }
+    h.update(json.dumps(meta, sort_keys=True, default=str).encode("utf-8"))
+    all_files = sorted({os.path.normpath(p) for p in (list(ext.sources) + list(header_files))})
+    for path in all_files:
+        h.update(path.encode("utf-8"))
+        if os.path.isfile(path):
+            with open(path, "rb") as f:
+                h.update(f.read())
+    return h.hexdigest()
+
+
 class BuildReleaseExtension(BuildExtension):
     def __init__(self, *args, **kwargs) -> None:
         super(BuildReleaseExtension, self).__init__(*args, **kwargs)
+        self._user_force = False
+
+    def finalize_options(self) -> None:
+        # BuildExtension.finalize_options() 在 use_ninja=True 时会强制将 self.force 置为 True，
+        # 必须在调用 super() 前记录用户显式传入的 --force/-f 意图，否则模块级 skip 永远不会生效。
+        self._user_force = bool(self.force)
+        super().finalize_options()
+
+    def build_extension(self, ext) -> None:
+        ext_path = self.get_ext_fullpath(ext.name)
+        mod_key = ext.name.rsplit(".", 1)[-1]
+        orig_build_temp = self.build_temp
+        mod_temp_dir = os.path.join(orig_build_temp, mod_key)
+        fp_file = os.path.join(mod_temp_dir, "fingerprint.sha256")
+
+        cur_fp = _compute_module_fingerprint(
+            ext,
+            header_files=getattr(ext, "_watch_headers", []),
+            env_meta={
+                "dtk": str(dtk_version),
+                "torch": str(torch_version),
+                "archs": os.environ.get("PYTORCH_ROCM_ARCH", ""),
+            },
+        )
+        user_force = self._user_force or os.environ.get("LIGHTOP_FORCE_REBUILD", "0") == "1"
+        if (
+            not user_force
+            and os.path.isfile(ext_path)
+            and os.path.isfile(fp_file)
+            and open(fp_file, "r", encoding="utf-8").read().strip() == cur_fp
+        ):
+            print(f"[lightop] skip up-to-date module: {ext.name} ({ext_path})")
+            return
+
+        os.makedirs(mod_temp_dir, exist_ok=True)
+        self.build_temp = mod_temp_dir
+        orig_force = self.force
+        self.force = True  # 指纹已变化（含仅修改头文件场景），放行至模块独立 Ninja 做文件级增量
+        try:
+            super().build_extension(ext)
+        finally:
+            self.force = orig_force
+            self.build_temp = orig_build_temp
+        with open(fp_file, "w", encoding="utf-8") as f:
+            f.write(cur_fp)
 
     def build_extensions(self) -> None:
         self._check_abi()
@@ -591,9 +670,9 @@ def get_extensions():
         ('moe_marlin_gemm/w4a16', '*.cu'),
         ('moe_marlin_gemm/w4a8', '*.cu'),
         ('moe_marlin_gemm/w4fp8', '*.cu'),
-        ('mqa_logits', '*.cu'),
-        ('mqa_logits/bf16', '*.cu'),
-        ('mqa_logits/fp8', '*.cu'),
+        # mqa_logits root + bf16 + fp8 kernels are compiled into the standalone
+        # lightop._mqa_logits extension (see configs/op_modules.json). int8 stays
+        # here because mqa_logits_topk_sampled_int8 is still bound in lightop.op.
         ('mqa_logits/fp8_fp4', '*.cu'),
         ('mqa_logits/int8', '*.cu'),
         ('mqa_logits/paged', '*.cu'),
@@ -629,17 +708,79 @@ def get_extensions():
         define_macros=define_macros,
         extra_compile_args=extra_compile_args)
 
+    # 监听除已拆分模块目录之外的头文件，避免仅修改 _mqa_logits 时触发 lightop.op 重编。
+    # 注意：int8/paged/sparse/fp8_fp4 仍编译进 op，故保留其头文件及公共根头文件的监听；
+    # 仅排除 _mqa_logits 独占的 bf16/fp8 头目录与 mqa_logits_asm.h（op 不再引用）。
+    _mqa_excl_dirs = [
+        os.path.normpath("csrc/mqa_logits/bf16"),
+        os.path.normpath("csrc/mqa_logits/fp8"),
+    ]
+    _mqa_excl_file = os.path.normpath("csrc/mqa_logits/mqa_logits_asm.h")
+
+    def _op_watch_excluded(p: str) -> bool:
+        np = os.path.normpath(p)
+        if np == _mqa_excl_file:
+            return True
+        for d in _mqa_excl_dirs:
+            if np == d or np.startswith(d + os.sep):
+                return True
+        return False
+
+    ext_ops._watch_headers = [
+        p for p in _expand_globs(["csrc/**/*.h", "csrc/**/*.hpp", "csrc/**/*.cuh"])
+        if not _op_watch_excluded(p)
+    ]
+
     extensions.append(ext_ops)
-    extensions.append(extension(
+
+    # 从 configs/op_modules.json 加载已拆分的独立算子块
+    op_modules_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "configs", "op_modules.json")
+    if os.path.isfile(op_modules_cfg_path):
+        with open(op_modules_cfg_path, "r", encoding="utf-8") as f:
+            op_modules_cfg = json.load(f)
+        common_headers = _expand_globs(op_modules_cfg.get("common_headers", []))
+        for mod_name, mod_cfg in op_modules_cfg.get("modules", {}).items():
+            mod_sources = _expand_globs(mod_cfg.get("sources", []))
+            mod_headers = sorted(set(common_headers) | set(_expand_globs(mod_cfg.get("headers", []))))
+            mod_compile_args = {k: list(v) for k, v in extra_compile_args.items()}
+            mod_compile_args["cxx"].extend(mod_cfg.get("flags_extra_cc", []))
+            mod_compile_args["nvcc"].extend(mod_cfg.get("flags_extra_hip", []))
+            mod_ext = extension(
+                name=f"lightop.{mod_name}",
+                sources=mod_sources,
+                include_dirs=[os.path.abspath(d) for d in mod_cfg.get("include_dirs", [])],
+                libraries=list(mod_cfg.get("libraries", [])),
+                library_dirs=[os.path.join(rocm_home, 'lib')],
+                define_macros=list(define_macros),
+                extra_compile_args=mod_compile_args,
+            )
+            mod_ext._watch_headers = mod_headers
+            extensions.append(mod_ext)
+
+    ext_router = extension(
         name="lightop._router_gemm",
         sources=["./csrc/router/router_gemm.cu"],
         extra_compile_args={"nvcc": ["-O3"]},
-    ))
-    extensions.append(extension(
+    )
+    ext_router._watch_headers = _expand_globs(["csrc/router/**/*.h", "csrc/router/**/*.hpp", "csrc/router/**/*.cuh"])
+    extensions.append(ext_router)
+
+    ext_dsv41 = extension(
         name="lightop._dsv41_prep",
         sources=[indexer_prep],
         extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "-ffp-contract=off"]},
-    ))
+    )
+    ext_dsv41._watch_headers = _expand_globs(["csrc/kernels/mla/**/*.h", "csrc/kernels/mla/**/*.hpp", "csrc/kernels/mla/**/*.cuh"])
+    extensions.append(ext_dsv41)
+
+    # 可选快捷过滤开关（日常增量编译无需设置，靠 Fingerprint 自动跳过未改动模块）
+    build_modules = os.environ.get("LIGHTOP_BUILD_MODULES", "").strip()
+    if build_modules:
+        wanted = {m.strip() for m in build_modules.split(",") if m.strip()}
+        extensions = [
+            ext for ext in extensions
+            if ext.name in wanted or ext.name.rsplit(".", 1)[-1] in wanted
+        ]
     return extensions
 
 def _get_pytorch_version():

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "common_headers": [
+    "csrc/include/hcu_mmac.h",
+    "csrc/include/aiter_hip_common.h"
+  ],
+  "modules": {
+    "_mqa_logits": {
+      "sources": [
+        "csrc/mqa_logits/*.cu",
+        "csrc/mqa_logits/bf16/*.cu",
+        "csrc/mqa_logits/fp8/*.cu",
+        "csrc/mqa_logits/int8/*.cu",
+        "csrc/mqa_logits/mqa_logits_pybind.cpp"
+      ],
+      "headers": [
+        "csrc/mqa_logits/*.h",
+        "csrc/mqa_logits/*.hpp",
+        "csrc/mqa_logits/*.cuh",
+        "csrc/mqa_logits/bf16/**/*.h",
+        "csrc/mqa_logits/bf16/**/*.hpp",
+        "csrc/mqa_logits/bf16/**/*.cuh",
+        "csrc/mqa_logits/fp8/**/*.h",
+        "csrc/mqa_logits/fp8/**/*.hpp",
+        "csrc/mqa_logits/fp8/**/*.cuh",
+        "csrc/mqa_logits/int8/**/*.h",
+        "csrc/mqa_logits/int8/**/*.hpp",
+        "csrc/mqa_logits/int8/**/*.cuh"
+      ],
+      "include_dirs": [
+        "csrc",
+        "csrc/include",
+        "csrc/mqa_logits"
+      ],
+      "libraries": ["rocblas"],
+      "flags_extra_cc": [],
+      "flags_extra_hip": []
+    }
+  }
+}
