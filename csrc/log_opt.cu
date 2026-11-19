@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Elementwise natural log for LightOP. CUDA-style source; hipify at build.
 // Vec8 half/bf16 + Vec4 fp32. gfx938: packed HCU cvt + amdgcn log2 * ln2.
 // fp16 nvec=8 (retry after cheap log2); bf16 nvec=8; fp32 nvec=4 from 1M elems.

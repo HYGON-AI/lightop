@@ -1,3 +1,6 @@
+// Copyright (c) 2026 Hygon Information Technology Co., Ltd.
+// SPDX-License-Identifier: Apache-2.0
+
 // Ported from custom_ops/custom_addrmsnormdynamicquant_hip.hip for lightop.
 // HIP runtime APIs rewritten to CUDA-style for lightop hipify build.
 
