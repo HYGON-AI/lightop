@@ -1142,7 +1142,8 @@ std::vector<Tensor> bf16_mega_gate_hcu_impl(
     const Tensor& x, const Tensor& weight, const torch::optional<Tensor>& optional_bias, int64_t topk,
     bool renormalize, double routed_scaling_factor, bool apply_scale,
     const torch::optional<std::vector<Tensor>>& out,
-    const torch::optional<Tensor>& optional_mask);
+    const torch::optional<Tensor>& optional_mask,
+    const torch::optional<Tensor>& optional_physical_map, bool round_logits_to_bf16);
 std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
     const Tensor& x, const Tensor& weight, int64_t num_topk,
     bool use_shared_as_routed, int64_t num_shared_experts,
@@ -2088,7 +2089,9 @@ m.def("_bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu_impl,
       py::arg("x"), py::arg("weight"), py::arg("bias"), py::arg("topk") = 6,
       py::arg("renormalize") = true, py::arg("routed_scaling_factor") = 1.0,
       py::arg("apply_scale") = false, py::arg("out") = py::none(),
-      py::arg("mask") = py::none());
+      py::arg("mask") = py::none(),
+      py::arg("physical_map") = py::none(),
+      py::arg("round_logits_to_bf16") = false);
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
