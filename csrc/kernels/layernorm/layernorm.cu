@@ -6,6 +6,8 @@
 #include <iostream> //lj
 #include <algorithm>
 #include <type_traits>
+#include <mutex>
+#include <unordered_map>
 
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
@@ -683,21 +685,41 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
                   : 16384;
               if(cols >= 16384 && cols % cols_per_block == 0){
                 int lines_per_block=cols/cols_per_block;
-                static float* tmp_out_ptr = nullptr;
-                static int* sync_counter_ptr = nullptr;
-                static size_t tmp_cap = 0;
-                static size_t sync_cap = 0;
+                // Cached fused-reduction workspace, keyed by device: a bare `static`
+                // here would be shared across all CUDA devices and callers with no
+                // locking, so a different device (or a concurrent call on another
+                // stream) could race on the same buffer or read/write past its
+                // cached capacity. Guard with a mutex and key the cache by device.
+                static std::mutex workspace_mutex;
+                static std::unordered_map<int, float*> tmp_out_ptr_by_device;
+                static std::unordered_map<int, int*> sync_counter_ptr_by_device;
+                static std::unordered_map<int, size_t> tmp_cap_by_device;
+                static std::unordered_map<int, size_t> sync_cap_by_device;
                 const size_t need_sum = (size_t)rows * 2 * sizeof(float);
                 const size_t need_sync = (size_t)rows * sizeof(int);
                 auto stream = at::cuda::getCurrentCUDAStream();
+                const int device = c10::cuda::current_device();
+                std::lock_guard<std::mutex> workspace_lock(workspace_mutex);
+                float*& tmp_out_ptr = tmp_out_ptr_by_device[device];
+                int*& sync_counter_ptr = sync_counter_ptr_by_device[device];
+                size_t& tmp_cap = tmp_cap_by_device[device];
+                size_t& sync_cap = sync_cap_by_device[device];
                 if (tmp_cap < need_sum) {
                   if (tmp_out_ptr) hipFree(tmp_out_ptr);
-                  hipMalloc(&tmp_out_ptr, need_sum);
+                  float* new_tmp_out_ptr = nullptr;
+                  const hipError_t tmp_err = hipMalloc(&new_tmp_out_ptr, need_sum);
+                  TORCH_CHECK(tmp_err == hipSuccess, "layernorm: failed to allocate fused workspace: ",
+                              hipGetErrorString(tmp_err));
+                  tmp_out_ptr = new_tmp_out_ptr;
                   tmp_cap = need_sum;
                 }
                 if (sync_cap < need_sync) {
                   if (sync_counter_ptr) hipFree(sync_counter_ptr);
-                  hipMalloc(&sync_counter_ptr, need_sync);
+                  int* new_sync_counter_ptr = nullptr;
+                  const hipError_t sync_err = hipMalloc(&new_sync_counter_ptr, need_sync);
+                  TORCH_CHECK(sync_err == hipSuccess, "layernorm: failed to allocate sync counters: ",
+                              hipGetErrorString(sync_err));
+                  sync_counter_ptr = new_sync_counter_ptr;
                   sync_cap = need_sync;
                 }
                 hipMemsetAsync(tmp_out_ptr, 0, need_sum, stream);

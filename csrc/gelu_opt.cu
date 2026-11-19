@@ -287,6 +287,7 @@ void gelu_opt_impl(torch::Tensor input, torch::Tensor output, bool use_tanh) {
         return;
     }
 
+    const at::cuda::OptionalCUDAGuard device_guard(input.device());
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     if (use_tanh) {
         dispatch_gelu<true>(input.scalar_type(), input.data_ptr(), output.data_ptr(), n, stream);

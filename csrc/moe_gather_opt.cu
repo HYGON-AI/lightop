@@ -514,10 +514,14 @@ __device__ __forceinline__ void moe_gather_accumulate_token_topk_vec8(
             if (rk >= topk) {
                 break;
             }
-            const int64_t row_off =
+            const int64_t resolved_row =
                 rows_consecutive
-                    ? static_cast<int64_t>(base_row + rk) * hidden_size64
-                    : static_cast<int64_t>(smem_rows[rk]) * hidden_size64;
+                    ? static_cast<int64_t>(base_row + rk)
+                    : static_cast<int64_t>(smem_rows[rk]);
+            if (resolved_row < 0) {
+                continue;
+            }
+            const int64_t row_off = resolved_row * hidden_size64;
             const float weight = smem_weights[rk];
             const Bf16Vec8 sv = load_bf16_vec8(scatter_tokens + row_off + i);
             vec8_golden_accumulate_fp32(acc, sv, weight);
@@ -544,10 +548,14 @@ __device__ __forceinline__ void moe_gather_accumulate_token_topk_vec8(
             if (rk >= topk) {
                 break;
             }
-            const int64_t row_off =
+            const int64_t resolved_row =
                 rows_consecutive
-                    ? static_cast<int64_t>(base_row + rk) * hidden_size64
-                    : static_cast<int64_t>(smem_rows[rk]) * hidden_size64;
+                    ? static_cast<int64_t>(base_row + rk)
+                    : static_cast<int64_t>(smem_rows[rk]);
+            if (resolved_row < 0) {
+                continue;
+            }
+            const int64_t row_off = resolved_row * hidden_size64;
             const float weight = smem_weights[rk];
             const Bf16Vec8 sv = load_bf16_vec8(scatter_tokens + row_off + i);
             vec8_golden_accumulate_fp32(acc, sv, weight);
@@ -1281,9 +1289,13 @@ __device__ __forceinline__ void moe_gather_v2_accumulate_token_topk_vec8(
             if (rk >= topk) {
                 break;
             }
-            const int64_t row_off = rows_consecutive
-                                        ? static_cast<int64_t>(base_row + rk) * hidden_size64
-                                        : static_cast<int64_t>(smem_rows[rk]) * hidden_size64;
+            const int64_t resolved_row = rows_consecutive
+                                             ? static_cast<int64_t>(base_row + rk)
+                                             : static_cast<int64_t>(smem_rows[rk]);
+            if (resolved_row < 0) {
+                continue;
+            }
+            const int64_t row_off = resolved_row * hidden_size64;
             vec8_golden_accumulate_fp32(
                 acc, load_bf16_vec8(scatter_tokens + row_off + i), smem_weights[rk]);
         }
@@ -1303,9 +1315,13 @@ __device__ __forceinline__ void moe_gather_v2_accumulate_token_topk_vec8(
             if (rk >= topk) {
                 break;
             }
-            const int64_t row_off = rows_consecutive
-                                        ? static_cast<int64_t>(base_row + rk) * hidden_size64
-                                        : static_cast<int64_t>(smem_rows[rk]) * hidden_size64;
+            const int64_t resolved_row = rows_consecutive
+                                             ? static_cast<int64_t>(base_row + rk)
+                                             : static_cast<int64_t>(smem_rows[rk]);
+            if (resolved_row < 0) {
+                continue;
+            }
+            const int64_t row_off = resolved_row * hidden_size64;
             vec8_golden_accumulate_fp32(
                 acc, load_bf16_vec8(scatter_tokens + row_off + i), smem_weights[rk]);
         }
@@ -1668,6 +1684,8 @@ torch::Tensor moe_gather_forward_v2_hip(
     TORCH_CHECK(inv_perm_tensor.scalar_type() == torch::kInt32, "inv_perm must be int32");
     TORCH_CHECK(inv_perm_tensor.dim() == 2 && inv_perm_tensor.size(0) == num_tokens,
                 "inv_perm shape must be [num_tokens, topk]");
+    TORCH_CHECK(inv_perm_tensor.size(1) == topk,
+                "inv_perm topk dimension (", inv_perm_tensor.size(1), ") must equal topk (", topk, ")");
 
     moe_gather_v2_launch_inv_perm(
         stream, output, scatter_tokens, scatter_token_weight, inv_perm_tensor,

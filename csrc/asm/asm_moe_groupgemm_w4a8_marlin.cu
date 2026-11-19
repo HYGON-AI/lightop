@@ -255,6 +255,19 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   return;
 }
 
+// UNIT_SCALE / FAST_* / FAST_TRUNC_* .co variants skip the scale-apply
+// instructions entirely and assume a_scale/b_scale are all 1.0; passing
+// non-unit scales to one of these modes would silently compute wrong
+// results, so verify that assumption on the host before dispatching.
+static void check_unit_scale_for_fast_mode(
+    const torch::Tensor& a_scale, const torch::Tensor& b_scale, int mode) {
+  TORCH_CHECK(
+      torch::all(a_scale == 1).item<bool>() && torch::all(b_scale == 1).item<bool>(),
+      "moe_groupgemm_marlin_w4a8_asm: mode ", mode,
+      " requires a_scale and b_scale to be all-ones (unit scale) since the "
+      "selected kernel variant does not apply scaling");
+}
+
 torch::Tensor moe_groupgemm_marlin_w4a8_asm(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -399,6 +412,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1015) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1015);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -409,6 +423,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1016) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1016);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -419,6 +434,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1017) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1017);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -429,6 +445,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1018) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1018);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -439,6 +456,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1019) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1019);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -449,6 +467,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1020) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1020);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,
@@ -459,6 +478,7 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1021) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1021);
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
       at::ScalarType::BFloat16,

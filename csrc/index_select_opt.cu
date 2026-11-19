@@ -35,8 +35,19 @@ constexpr unsigned kGridRemapMult = 4097u;
 constexpr int kWavefront = 64;
 constexpr int kLargeDimThreshold = 4096;
 
-__device__ __forceinline__ int map_block(int bid, int bcount) {
-    if (bcount <= 1 || bcount == 65536) {
+// kGridRemapMult * bid (mod bcount) is only a bijection on [0, bcount) when
+// gcd(kGridRemapMult, bcount) == 1; otherwise the mapping collapses and some
+// output rows are never written (garbage) while others are hit twice.
+constexpr unsigned long long kGridRemapGcdHelper(unsigned long long a, unsigned long long b) {
+    return b == 0 ? a : kGridRemapGcdHelper(b, a % b);
+}
+
+bool grid_remap_is_bijective(int64_t bcount) {
+    return kGridRemapGcdHelper(kGridRemapMult, static_cast<unsigned long long>(bcount)) == 1ULL;
+}
+
+__device__ __forceinline__ int map_block(int bid, int bcount, bool use_remap) {
+    if (!use_remap || bcount <= 1 || bcount == 65536) {
         return bid;
     }
     return static_cast<int>(
@@ -50,8 +61,9 @@ __global__ void index_select_row_vec_kernel(
     ScalarT* __restrict__ dst,
     int64_t dim,
     int64_t dst_batch,
-    int vec_elems) {
-    const int ob = map_block(static_cast<int>(blockIdx.x), static_cast<int>(dst_batch));
+    int vec_elems,
+    bool use_remap) {
+    const int ob = map_block(static_cast<int>(blockIdx.x), static_cast<int>(dst_batch), use_remap);
     if (ob >= dst_batch) {
         return;
     }
@@ -113,6 +125,12 @@ void launch_index_select(
     int64_t dst_batch,
     int vec_elems,
     cudaStream_t stream) {
+    // Each row is offset by src_row * dim * sizeof(ScalarT) bytes; the vectorized
+    // kernels reinterpret that address as VecT* (16B), which is only well-defined
+    // when every row start is 16B-aligned, i.e. dim is a multiple of vec_elems.
+    // When it is not, fall back to a scalar (VecT == ScalarT) instantiation so the
+    // tail-loop-only path is used and no misaligned vector load/store occurs.
+    const bool aligned = (dim % vec_elems == 0);
     if (dim >= kLargeDimThreshold) {
         int threads = 256;
         if (dim >= 16384) {
@@ -121,24 +139,24 @@ void launch_index_select(
         if (dim >= 65536) {
             threads = 1024;
         }
-        index_select_row_vec_kernel<VecT, ScalarT><<<dim3(dst_batch), dim3(threads), 0, stream>>>(
-        src,
-        index,
-        out,
-        dim,
-        dst_batch,
-        vec_elems);;
+        const bool use_remap = grid_remap_is_bijective(dst_batch);
+        if (aligned) {
+            index_select_row_vec_kernel<VecT, ScalarT><<<dim3(dst_batch), dim3(threads), 0, stream>>>(
+            src, index, out, dim, dst_batch, vec_elems, use_remap);
+        } else {
+            index_select_row_vec_kernel<ScalarT, ScalarT><<<dim3(dst_batch), dim3(threads), 0, stream>>>(
+            src, index, out, dim, dst_batch, /*vec_elems=*/1, use_remap);
+        }
     } else {
         int rows_per_block = (dim <= 256) ? 8 : 4;
         const int blocks = static_cast<int>((dst_batch + rows_per_block - 1) / rows_per_block);
-        index_select_multirow_vec_kernel<VecT, ScalarT><<<dim3(blocks), dim3(256), 0, stream>>>(
-        src,
-        index,
-        out,
-        dim,
-        dst_batch,
-        rows_per_block,
-        vec_elems);;
+        if (aligned) {
+            index_select_multirow_vec_kernel<VecT, ScalarT><<<dim3(blocks), dim3(256), 0, stream>>>(
+            src, index, out, dim, dst_batch, rows_per_block, vec_elems);
+        } else {
+            index_select_multirow_vec_kernel<ScalarT, ScalarT><<<dim3(blocks), dim3(256), 0, stream>>>(
+            src, index, out, dim, dst_batch, rows_per_block, /*vec_elems=*/1);
+        }
     }
 }
 
@@ -157,6 +175,7 @@ void index_select_opt_impl(torch::Tensor src, torch::Tensor index, torch::Tensor
     TORCH_CHECK(out.size(0) == dst_batch && out.size(1) == dim,
                 "custom_index_select: out shape mismatch");
 
+    const at::cuda::OptionalCUDAGuard device_guard(src.device());
     auto stream = at::cuda::getCurrentCUDAStream();
     const int64_t* ip = index.data_ptr<int64_t>();
 

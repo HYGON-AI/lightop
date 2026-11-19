@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cmath>
 #include <type_traits>
+#include <mutex>
+#include <unordered_map>
 
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
@@ -795,6 +797,34 @@ static inline void launch_rms_fused_large(
   constexpr int elem_per_block = BLOCK_SIZE * VEC_SIZE * VEC_NUM_PER_THREAD;
   const int blocks_per_row = cols / elem_per_block;
   const int total_blocks = rows * blocks_per_row;
+
+  // rms_fused_kernel_block_align uses a non-cooperative cross-block spin-wait
+  // (atomicAdd poll on sync_counters) to synchronize all blocks of a row, which
+  // only terminates if every block in the launch can be resident simultaneously.
+  // Verify the grid fits in the device's resident-block capacity before launching;
+  // otherwise fail loudly instead of hanging forever.
+  int max_blocks_per_sm = 0;
+  cudaError_t occ_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &max_blocks_per_sm,
+      rms_fused_kernel_block_align<
+          scalar_t, T_ACC, VEC_SIZE, BLOCK_SIZE, VEC_NUM_PER_THREAD, IS_GEMMA, APPLY_CLAMP>,
+      BLOCK_SIZE, 0);
+  TORCH_CHECK(occ_err == cudaSuccess, "fused_add_rms_norm: occupancy query failed: ",
+              cudaGetErrorString(occ_err));
+  int device = 0;
+  TORCH_CHECK(cudaGetDevice(&device) == cudaSuccess, "fused_add_rms_norm: cudaGetDevice failed");
+  cudaDeviceProp prop;
+  TORCH_CHECK(cudaGetDeviceProperties(&prop, device) == cudaSuccess,
+              "fused_add_rms_norm: cudaGetDeviceProperties failed");
+  const int max_resident_blocks = max_blocks_per_sm * prop.multiProcessorCount;
+  TORCH_CHECK(
+      total_blocks <= max_resident_blocks,
+      "fused_add_rms_norm: grid of ", total_blocks,
+      " blocks exceeds this device's resident-block capacity (", max_resident_blocks,
+      "); the large-dim fused kernel relies on a cross-block spin-wait that requires "
+      "all blocks of the launch to be co-resident, so a larger grid would hang. "
+      "Reduce the batch size or hidden_size for this call.");
+
   rms_fused_kernel_block_align<
       scalar_t, T_ACC, VEC_SIZE, BLOCK_SIZE, VEC_NUM_PER_THREAD, IS_GEMMA, APPLY_CLAMP>
       <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
@@ -914,21 +944,38 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
   const int epb = (input.element_size() == 4) ? 8192 : 16384;
   if (ptrs_are_aligned && small_ptrs_are_aligned &&
       hidden_size >= 16384 && hidden_size % epb == 0) {
-    // Persistent workspace; memset each call (matches softmax zeros, keeps correctness)
-    static float* sum_ptr = nullptr;
-    static int* sync_ptr = nullptr;
-    static size_t sum_cap = 0;
-    static size_t sync_cap = 0;
+    // Persistent workspace; memset each call (matches softmax zeros, keeps correctness).
+    // Cached per-device (not per-stream/thread) and guarded by a mutex so concurrent
+    // callers on different devices/streams don't race on the cached capacity/pointer.
+    static std::mutex workspace_mutex;
+    static std::unordered_map<int, float*> sum_ptr_by_device;
+    static std::unordered_map<int, int*> sync_ptr_by_device;
+    static std::unordered_map<int, size_t> sum_cap_by_device;
+    static std::unordered_map<int, size_t> sync_cap_by_device;
     const size_t need_sum = (size_t)num_tokens * sizeof(float);
     const size_t need_sync = (size_t)num_tokens * sizeof(int);
+    const int device = c10::cuda::current_device();
+    std::lock_guard<std::mutex> workspace_lock(workspace_mutex);
+    float*& sum_ptr = sum_ptr_by_device[device];
+    int*& sync_ptr = sync_ptr_by_device[device];
+    size_t& sum_cap = sum_cap_by_device[device];
+    size_t& sync_cap = sync_cap_by_device[device];
     if (sum_cap < need_sum) {
+      float* new_sum_ptr = nullptr;
+      const hipError_t sum_err = hipMalloc(&new_sum_ptr, need_sum);
+      TORCH_CHECK(sum_err == hipSuccess, "fused_add_rms_norm: failed to allocate sum workspace: ",
+                  hipGetErrorString(sum_err));
       if (sum_ptr) hipFree(sum_ptr);
-      hipMalloc(&sum_ptr, need_sum);
+      sum_ptr = new_sum_ptr;
       sum_cap = need_sum;
     }
     if (sync_cap < need_sync) {
+      int* new_sync_ptr = nullptr;
+      const hipError_t sync_err = hipMalloc(&new_sync_ptr, need_sync);
+      TORCH_CHECK(sync_err == hipSuccess, "fused_add_rms_norm: failed to allocate sync workspace: ",
+                  hipGetErrorString(sync_err));
       if (sync_ptr) hipFree(sync_ptr);
-      hipMalloc(&sync_ptr, need_sync);
+      sync_ptr = new_sync_ptr;
       sync_cap = need_sync;
     }
     hipMemsetAsync(sum_ptr, 0, need_sum, stream);

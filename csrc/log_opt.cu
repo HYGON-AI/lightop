@@ -361,6 +361,7 @@ void log_opt_impl(torch::Tensor input, torch::Tensor output) {
         return;
     }
 
+    const at::cuda::OptionalCUDAGuard device_guard(input.device());
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     dispatch_log(input.scalar_type(), input.data_ptr(), output.data_ptr(), n, stream);
 }

@@ -316,7 +316,16 @@ torch::Tensor gather_opt(
     TORCH_CHECK(dim_size % kElementsPerVec == 0, 
                 "dim_size must be multiple of ", kElementsPerVec);
 
-    const bool is_row_uniform = (index.dim() == 2 && index.stride(1) == 0);
+    // special_embedding_* kernels only support Float/Half/BFloat16; auto-detecting
+    // row-uniform indices must not force an unsupported Double tensor into that
+    // path (it would hard-error below even though the general kernel handles it).
+    const auto scalar_type_for_special = src.scalar_type();
+    const bool special_supports_dtype =
+        scalar_type_for_special == at::ScalarType::Float ||
+        scalar_type_for_special == at::ScalarType::Half ||
+        scalar_type_for_special == at::ScalarType::BFloat16;
+    const bool is_row_uniform =
+        (index.dim() == 2 && index.stride(1) == 0) && special_supports_dtype;
     const bool use_special = special || is_row_uniform;
 
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
@@ -378,6 +387,7 @@ torch::Tensor gather_opt(
         else if (src.scalar_type() == at::ScalarType::Double)
             gather_kernel_general<double><<<grid, block, 0, stream>>>(src.data_ptr<double>(), index.data_ptr<int64_t>(), dst.data_ptr<double>(), dst_batch_size, dim_size);
     }
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
     return dst;
 }
 

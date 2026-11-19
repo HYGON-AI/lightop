@@ -36,8 +36,20 @@ static constexpr int kMultiRowThreads = 256;
 static constexpr int64_t kMultiRowDimThreshold = 256;  // probe: pipe wins for D>=256
 #define GRID_REMAP_MULT 4097
 
-__device__ __forceinline__ int map_block_idx(int block_idx, int block_count) {
-    if (block_count <= 1 || block_count == 65536 || block_count <= 4096) {
+// GRID_REMAP_MULT * block_idx (mod block_count) is only a bijection on
+// [0, block_count) when gcd(GRID_REMAP_MULT, block_count) == 1; otherwise the
+// mapping collapses and some destination rows are visited twice (double-add)
+// while others are skipped entirely.
+static constexpr unsigned long long grid_remap_gcd(unsigned long long a, unsigned long long b) {
+    return b == 0 ? a : grid_remap_gcd(b, a % b);
+}
+
+static bool grid_remap_is_bijective(int64_t block_count) {
+    return grid_remap_gcd(GRID_REMAP_MULT, static_cast<unsigned long long>(block_count)) == 1ULL;
+}
+
+__device__ __forceinline__ int map_block_idx(int block_idx, int block_count, bool use_remap) {
+    if (!use_remap || block_count <= 1 || block_count == 65536 || block_count <= 4096) {
         return block_idx;
     }
     const uint32_t bc = static_cast<uint32_t>(block_count);
@@ -52,8 +64,8 @@ static int round_up_wave(int threads) {
 // 1 block per row, software-pipelined float4 RMW (prefetch next before store current).
 __global__ __launch_bounds__(512, 2) void index_add_unique_fp32_pipe_kernel(
     const float* __restrict__ src, float* __restrict__ dst, const int64_t* __restrict__ index,
-    int64_t src_batch, int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t src_batch, int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -164,8 +176,8 @@ __global__ void index_add_mark_unique_kernel(const int64_t* __restrict__ index, 
 // Row-tiled FP32 atomics: 1 block/src-row, float4 load + 4×atomicAdd.
 __global__ __launch_bounds__(512, 2) void index_add_atomic_fp32_row_kernel(
     const float* __restrict__ src, float* __restrict__ dst, const int64_t* __restrict__ index,
-    int64_t src_batch, int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t src_batch, int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -192,8 +204,8 @@ __global__ __launch_bounds__(512, 2) void index_add_atomic_fp32_row_kernel(
 // dst is intentionally non-__restrict__ so the compiler may not assume dst0!=dst1.
 __global__ __launch_bounds__(512, 2) void index_add_atomic_fp32_dualrow_kernel(
     const float* __restrict__ src, float* dst, const int64_t* __restrict__ index, int64_t src_batch,
-    int64_t dim) {
-    const int pair = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t dim, bool use_remap) {
+    const int pair = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     const int src_row0 = pair * 2;
     if (src_row0 >= src_batch) {
         return;
@@ -346,8 +358,8 @@ __global__ __launch_bounds__(256, 8) void index_add_atomic_fp32_flat_vec_kernel(
 // 1-block-per-row scalar atomics (no float4) — coalesced atomics beat float4-atomic on gfx938.
 __global__ __launch_bounds__(512, 2) void index_add_atomic_fp32_row_scalar_kernel(
     const float* __restrict__ src, float* __restrict__ dst, const int64_t* __restrict__ index,
-    int64_t src_batch, int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t src_batch, int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -468,12 +480,42 @@ __device__ __forceinline__ void atomic_add_half2_u32<at::BFloat16>(unsigned int*
     } while (assumed != old);
 }
 
+// atomic_add_half2_u32 reinterprets the destination as a 4B-aligned unsigned int*
+// and issues a single atomicCAS on it, which is only well-defined when that address
+// is actually 4B-aligned. Row base addresses are offset by dst_row * dim * sizeof(T);
+// when dim is odd this offset's alignment depends on dst_row's parity (data-dependent,
+// not known at launch time), so some rows land on a misaligned address at runtime.
+// atomic_add_half itself stays correct for any 2B-aligned address (it locates the
+// containing 4B word via `addr & 2`), so misaligned rows fall back to it scalarly.
+__device__ __forceinline__ bool is_u32_aligned(const void* p) {
+    return (reinterpret_cast<uintptr_t>(p) & 0x3u) == 0u;
+}
+
+template <typename T>
+__device__ __forceinline__ void atomic_add_half_row(
+    T* __restrict__ dst_row_ptr, const T* __restrict__ src_row_ptr, int64_t dim, int lane, int lane_stride) {
+    if (!is_u32_aligned(dst_row_ptr)) {
+        for (int64_t i = lane; i < dim; i += lane_stride) {
+            atomic_add_half(dst_row_ptr + i, src_row_ptr[i]);
+        }
+        return;
+    }
+    const int64_t npair = dim >> 1;
+    for (int64_t pi = lane; pi < npair; pi += lane_stride) {
+        const unsigned int s = *reinterpret_cast<const unsigned int*>(src_row_ptr + (pi << 1));
+        atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst_row_ptr + (pi << 1)), s);
+    }
+    if ((dim & 1) && lane == 0) {
+        atomic_add_half(dst_row_ptr + (npair << 1), src_row_ptr[npair << 1]);
+    }
+}
+
 // 1 block/src-row: half2-packed CAS.
 template <typename T>
 __global__ __launch_bounds__(512, 2) void index_add_atomic_half_row_kernel(
     const T* __restrict__ src, T* __restrict__ dst, const int64_t* __restrict__ index, int64_t src_batch,
-    int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -481,40 +523,26 @@ __global__ __launch_bounds__(512, 2) void index_add_atomic_half_row_kernel(
     const T* src_row_ptr = src + static_cast<int64_t>(src_row) * dim;
     T* dst_row_ptr = dst + dst_row * dim;
 
-    const int64_t npair = dim >> 1;
-    for (int64_t pi = threadIdx.x; pi < npair; pi += blockDim.x) {
-        const unsigned int s = *reinterpret_cast<const unsigned int*>(src_row_ptr + (pi << 1));
-        atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst_row_ptr + (pi << 1)), s);
-    }
-    if ((dim & 1) && threadIdx.x == 0) {
-        atomic_add_half(dst_row_ptr + (npair << 1), src_row_ptr[npair << 1]);
-    }
+    atomic_add_half_row<T>(dst_row_ptr, src_row_ptr, dim, threadIdx.x, blockDim.x);
 }
 
 // Dual-row half CAS: interleaved when dst rows differ; sequential on collision.
 template <typename T>
 __global__ __launch_bounds__(512, 2) void index_add_atomic_half_dualrow_kernel(
     const T* __restrict__ src, T* dst, const int64_t* __restrict__ index, int64_t src_batch,
-    int64_t dim) {
-    const int pair = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t dim, bool use_remap) {
+    const int pair = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     const int src_row0 = pair * 2;
     if (src_row0 >= src_batch) {
         return;
     }
-    const int64_t npair = dim >> 1;
     const T* src0 = src + static_cast<int64_t>(src_row0) * dim;
     const int64_t dst_row0 = index[src_row0];
     T* dst0 = dst + dst_row0 * dim;
 
     const int src_row1 = src_row0 + 1;
     if (src_row1 >= src_batch) {
-        for (int64_t pi = threadIdx.x; pi < npair; pi += blockDim.x) {
-            const unsigned int s = *reinterpret_cast<const unsigned int*>(src0 + (pi << 1));
-            atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst0 + (pi << 1)), s);
-        }
-        if ((dim & 1) && threadIdx.x == 0) {
-            atomic_add_half(dst0 + (npair << 1), src0[npair << 1]);
-        }
+        atomic_add_half_row<T>(dst0, src0, dim, threadIdx.x, blockDim.x);
         return;
     }
 
@@ -523,35 +551,14 @@ __global__ __launch_bounds__(512, 2) void index_add_atomic_half_dualrow_kernel(
     T* dst1 = dst + dst_row1 * dim;
 
     if (dst_row0 != dst_row1) {
-        for (int64_t pi = threadIdx.x; pi < npair; pi += blockDim.x) {
-            const int64_t off = pi << 1;
-            const unsigned int s0 = *reinterpret_cast<const unsigned int*>(src0 + off);
-            const unsigned int s1 = *reinterpret_cast<const unsigned int*>(src1 + off);
-            atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst0 + off), s0);
-            atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst1 + off), s1);
-        }
-        if ((dim & 1) && threadIdx.x == 0) {
-            atomic_add_half(dst0 + (npair << 1), src0[npair << 1]);
-            atomic_add_half(dst1 + (npair << 1), src1[npair << 1]);
-        }
+        atomic_add_half_row<T>(dst0, src0, dim, threadIdx.x, blockDim.x);
+        atomic_add_half_row<T>(dst1, src1, dim, threadIdx.x, blockDim.x);
         return;
     }
 
-    for (int64_t pi = threadIdx.x; pi < npair; pi += blockDim.x) {
-        const unsigned int s = *reinterpret_cast<const unsigned int*>(src0 + (pi << 1));
-        atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst0 + (pi << 1)), s);
-    }
-    if ((dim & 1) && threadIdx.x == 0) {
-        atomic_add_half(dst0 + (npair << 1), src0[npair << 1]);
-    }
+    atomic_add_half_row<T>(dst0, src0, dim, threadIdx.x, blockDim.x);
     __syncthreads();
-    for (int64_t pi = threadIdx.x; pi < npair; pi += blockDim.x) {
-        const unsigned int s = *reinterpret_cast<const unsigned int*>(src1 + (pi << 1));
-        atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst1 + (pi << 1)), s);
-    }
-    if ((dim & 1) && threadIdx.x == 0) {
-        atomic_add_half(dst1 + (npair << 1), src1[npair << 1]);
-    }
+    atomic_add_half_row<T>(dst1, src1, dim, threadIdx.x, blockDim.x);
 }
 
 template <typename T>
@@ -572,14 +579,7 @@ __global__ __launch_bounds__(256, 4) void index_add_atomic_half_multirow_kernel(
         const T* src_row_ptr = src + static_cast<int64_t>(src_row) * dim;
         T* dst_row_ptr = dst + dst_row * dim;
 
-        const int64_t npair = dim >> 1;
-        for (int64_t pi = lane; pi < npair; pi += kWavefrontSize) {
-            const unsigned int s = *reinterpret_cast<const unsigned int*>(src_row_ptr + (pi << 1));
-            atomic_add_half2_u32<T>(reinterpret_cast<unsigned int*>(dst_row_ptr + (pi << 1)), s);
-        }
-        if ((dim & 1) && lane == 0) {
-            atomic_add_half(dst_row_ptr + (npair << 1), src_row_ptr[npair << 1]);
-        }
+        atomic_add_half_row<T>(dst_row_ptr, src_row_ptr, dim, lane, kWavefrontSize);
     }
 }
 
@@ -641,8 +641,8 @@ __device__ __forceinline__ uint4 half_vec8_add<at::BFloat16>(uint4 d_bits, uint4
 template <typename T>
 __global__ __launch_bounds__(512, 2) void index_add_unique_half_pipe_kernel(
     const T* __restrict__ src, T* __restrict__ dst, const int64_t* __restrict__ index, int64_t src_batch,
-    int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -692,8 +692,8 @@ __global__ __launch_bounds__(512, 2) void index_add_unique_half_pipe_kernel(
 // Uses 2-wide depth (matches FP16 ILP schedule). A 4-live-wide variant was slower on gfx938.
 __global__ __launch_bounds__(512, 2) void index_add_unique_bf16_pipe_kernel(
     const at::BFloat16* __restrict__ src, at::BFloat16* __restrict__ dst,
-    const int64_t* __restrict__ index, int64_t src_batch, int64_t dim) {
-    const int src_row = map_block_idx(blockIdx.x, gridDim.x);
+    const int64_t* __restrict__ index, int64_t src_batch, int64_t dim, bool use_remap) {
+    const int src_row = map_block_idx(blockIdx.x, gridDim.x, use_remap);
     if (src_row >= src_batch) {
         return;
     }
@@ -800,8 +800,9 @@ static void launch_index_add_unique_fp32(const float* src, float* dst, const int
             threads = 512;
         }
         const int blocks = static_cast<int>(src_batch);
+        const bool use_remap = grid_remap_is_bijective(blocks);
         index_add_unique_fp32_pipe_kernel<<<blocks, threads, 0, stream>>>(src, dst, index, src_batch,
-                                                                         dim);
+                                                                         dim, use_remap);
     }
 }
 
@@ -840,14 +841,16 @@ static void launch_index_add_atomic_fp32(const float* src, float* dst, const int
         } else if (dim >= 4096) {
             threads = 512;
         }
+        const bool use_remap = grid_remap_is_bijective(src_batch);
         index_add_atomic_fp32_row_scalar_kernel<<<static_cast<int>(src_batch), threads, 0, stream>>>(
-            src, dst, index, src_batch, dim);
+            src, dst, index, src_batch, dim, use_remap);
     };
 
     if (mode == 1) {
         int threads = (dim >= 4096) ? 512 : 256;
+        const bool use_remap = grid_remap_is_bijective(src_batch);
         index_add_atomic_fp32_row_kernel<<<static_cast<int>(src_batch), threads, 0, stream>>>(
-            src, dst, index, src_batch, dim);
+            src, dst, index, src_batch, dim, use_remap);
         return;
     }
     if (mode == 2) {
@@ -861,8 +864,9 @@ static void launch_index_add_atomic_fp32(const float* src, float* dst, const int
     if (mode == 4 && src_batch >= 2) {
         int threads = (dim >= 4096) ? 512 : 256;
         const int pairs = static_cast<int>((src_batch + 1) / 2);
+        const bool use_remap = grid_remap_is_bijective(pairs);
         index_add_atomic_fp32_dualrow_kernel<<<pairs, threads, 0, stream>>>(src, dst, index, src_batch,
-                                                                           dim);
+                                                                           dim, use_remap);
         return;
     }
     if (mode == 5) {
@@ -910,11 +914,13 @@ static void launch_index_add_atomic_half(const T* src, T* dst, const int64_t* in
     const bool force_row = row_env && row_env[0] == '1' && row_env[1] == '\0';
     if (!force_row && src_batch >= 2) {
         const int pairs = static_cast<int>((src_batch + 1) / 2);
+        const bool use_remap = grid_remap_is_bijective(pairs);
         index_add_atomic_half_dualrow_kernel<T><<<pairs, threads, 0, stream>>>(src, dst, index,
-                                                                              src_batch, dim);
+                                                                              src_batch, dim, use_remap);
     } else {
+        const bool use_remap = grid_remap_is_bijective(src_batch);
         index_add_atomic_half_row_kernel<T><<<static_cast<int>(src_batch), threads, 0, stream>>>(
-            src, dst, index, src_batch, dim);
+            src, dst, index, src_batch, dim, use_remap);
     }
 }
 
@@ -1004,8 +1010,9 @@ static void launch_index_add_unique_fp16(const at::Half* src, at::Half* dst, con
             }
         }
         const int blocks = static_cast<int>(src_batch);
+        const bool use_remap = grid_remap_is_bijective(blocks);
         index_add_unique_half_pipe_kernel<at::Half><<<blocks, threads, 0, stream>>>(
-            src, dst, index, src_batch, dim);
+            src, dst, index, src_batch, dim, use_remap);
     }
 }
 
@@ -1035,8 +1042,9 @@ static void launch_index_add_unique_bf16(const at::BFloat16* src, at::BFloat16* 
             }
         }
         const int blocks = static_cast<int>(src_batch);
+        const bool use_remap = grid_remap_is_bijective(blocks);
         index_add_unique_bf16_pipe_kernel<<<blocks, threads, 0, stream>>>(src, dst, index, src_batch,
-                                                                         dim);
+                                                                         dim, use_remap);
     }
 }
 
@@ -1061,6 +1069,7 @@ void index_add_opt_impl(torch::Tensor& dst, torch::Tensor index, torch::Tensor s
     const int64_t src_batch = src.size(0);
     const int64_t dst_batch = dst.size(0);
     const int64_t dim = src.size(1);
+    const at::cuda::OptionalCUDAGuard device_guard(dst.device());
     const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
     const int64_t elem_size = dst.element_size();
 
