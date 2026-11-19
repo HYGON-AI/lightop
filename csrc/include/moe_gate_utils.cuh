@@ -102,7 +102,7 @@ __device__ __forceinline__ void topk_row(
     const float* __restrict__ input, const float* __restrict__ bias,
     const float* __restrict__ logits, const bool* __restrict__ mask,
     float* __restrict__ output, int64_t* __restrict__ ids, int row, int rows,
-    int num_experts, bool renormalize, float scale, bool apply_scale) {
+    int num_experts, bool renormalize, float scale, bool apply_scale, const int64_t* physical_map = nullptr) {
   constexpr int WIDTH = 32;
   static_assert(TOP_K > 0 && TOP_K <= WIDTH);
   static_assert(EXPERT_CAPACITY % (WIDTH * 4) == 0 && EXPERT_CAPACITY <= 512);
@@ -194,7 +194,7 @@ __device__ __forceinline__ void topk_row(
     const bool valid = mask == nullptr || mask[row];
     output[row * TOP_K + lane] =
         valid ? value / norm * (apply_scale ? scale : 1.0f) : 0.0f;
-    ids[row * TOP_K + lane] = valid ? selected : -1;
+    ids[row * TOP_K + lane] = valid ? (physical_map ? physical_map[selected] : selected) : -1;
   }
 }
 }  // namespace at::native::moe_gate

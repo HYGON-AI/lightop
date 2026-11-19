@@ -2179,3 +2179,304 @@ void dsv4_dequantize_k_cache_paged_out(
 
 }  // namespace native
 }  // namespace at
+
+namespace at::native {
+namespace dsv4_compact_detail {
+namespace {
+
+// This file deliberately exposes DPSKV4-only entry points.  It does not
+// participate in, or alter, the Spark 656-byte gather/upconvert dispatch.
+constexpr int64_t kDsv4NopeDim = 448;
+constexpr int64_t kDsv4RopeDim = 64;
+constexpr int64_t kDsv4HeadDim = kDsv4NopeDim + kDsv4RopeDim;
+constexpr int64_t kDsv4TileSize = 64;
+constexpr int64_t kDsv4ScaleTiles = kDsv4NopeDim / kDsv4TileSize;
+constexpr int64_t kDsv4TokenDataBytes =
+    kDsv4NopeDim + kDsv4RopeDim * sizeof(dsv4_bfloat16);
+constexpr int64_t kDsv4ScaleBytesPerToken = 8;
+constexpr int kThreadsPerRow = 32;
+constexpr int kRowsPerBlock = 8;
+constexpr int kThreadsPerBlock = kThreadsPerRow * kRowsPerBlock;
+constexpr int kCase13RowsPerBlock = 16;
+constexpr int kCase13ThreadsPerBlock =
+    kThreadsPerRow * kCase13RowsPerBlock;
+constexpr uint32_t kCase13BlocksPerQuery = 524;
+constexpr int kDsv4ElementsPerLane = kDsv4HeadDim / kThreadsPerRow;
+constexpr int kDsv4NopeLanes = kDsv4NopeDim / kDsv4ElementsPerLane;
+
+template <typename T, int N>
+struct alignas(sizeof(T) * N) Dsv4Vector {
+  T val[N];
+};
+
+static_assert(kDsv4ElementsPerLane == 16);
+static_assert(kDsv4NopeLanes == 28);
+static_assert(
+    sizeof(Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>) == 32);
+
+__device__ __forceinline__ float dsv4_fp8_to_float(uint8_t value) {
+  const uint32_t sign = static_cast<uint32_t>(value & 0x80u) << 24;
+  const uint32_t magnitude = static_cast<uint32_t>(value & 0x7fu);
+  const uint32_t exponent = magnitude >> 3;
+  const uint32_t mantissa = magnitude & 0x7u;
+  if (exponent == 0) {
+    const float subnormal = static_cast<float>(mantissa) * 0x1.0p-9f;
+    return __uint_as_float(__float_as_uint(subnormal) | sign);
+  }
+  if (magnitude == 0x7fu) {
+    return __uint_as_float(0x7fc00000u | sign);
+  }
+  return __uint_as_float(
+      sign | ((exponent + 120u) << 23) | (mantissa << 20));
+}
+
+__device__ __forceinline__ float dsv4_ue8m0_to_float(uint8_t value) {
+  // DPSKV4 uses UE8M0 with bias 127.  Byte zero maps below the minimum
+  // normal FP32 value and the Triton/reference implementation flushes it.
+  return value == 0
+      ? 0.0f
+      : __uint_as_float(static_cast<uint32_t>(value) << 23);
+}
+
+__device__ __forceinline__ uint32_t dsv4_scaled_pair_to_bf16_rne(
+    uint8_t first,
+    uint8_t second,
+    float scale) {
+  union {
+    float value;
+    uint32_t bits;
+  } first_value{dsv4_fp8_to_float(first) * scale};
+  union {
+    float value;
+    uint32_t bits;
+  } second_value{dsv4_fp8_to_float(second) * scale};
+  first_value.bits += 0x7fffu + ((first_value.bits >> 16) & 1u);
+  second_value.bits += 0x7fffu + ((second_value.bits >> 16) & 1u);
+  return __builtin_amdgcn_perm(
+      first_value.bits, second_value.bits, 0x03020706u);
+}
+
+template <typename index_t, int64_t PageSize>
+__device__ __forceinline__ void dsv4_gather_one_row(
+    const uint8_t* __restrict__ src_cache,
+    const index_t* __restrict__ token_indices,
+    const int32_t* __restrict__ valid_lengths,
+    dsv4_bfloat16* __restrict__ dst,
+    int32_t* __restrict__ compact_indices,
+    int64_t query,
+    int64_t column,
+    int64_t topk,
+    int64_t output_topk,
+    int64_t output_column,
+    int64_t num_pages,
+    int64_t page_size,
+    int64_t page_stride_bytes,
+    int lane) {
+  const int64_t valid_length = static_cast<int64_t>(valid_lengths[query]);
+  const bool in_valid_prefix = column < valid_length;
+  const int64_t index_offset = query * topk + column;
+  const int64_t output_offset = query * output_topk + output_column;
+  const int64_t location = in_valid_prefix
+      ? static_cast<int64_t>(token_indices[index_offset])
+      : 0;
+  const int64_t effective_page_size =
+      PageSize > 0 ? PageSize : page_size;
+  const bool valid_location =
+      in_valid_prefix &&
+      location >= 0 &&
+      location < num_pages * effective_page_size;
+
+  const int64_t safe_location = valid_location ? location : 0;
+  int64_t page;
+  int64_t in_page;
+  if constexpr (PageSize > 0) {
+    static_assert(
+        (PageSize & (PageSize - 1)) == 0,
+        "specialized page size must be a power of two");
+    page = safe_location / PageSize;
+    in_page = safe_location % PageSize;
+  } else {
+    page = safe_location / page_size;
+    in_page = safe_location - page * page_size;
+  }
+  const int64_t page_base = page * page_stride_bytes;
+  const int64_t token_data_base =
+      page_base + in_page * kDsv4TokenDataBytes;
+  const int64_t token_scale_base =
+      page_base + effective_page_size * kDsv4TokenDataBytes +
+      in_page * kDsv4ScaleBytesPerToken;
+  dsv4_bfloat16* const output_row =
+      dst + output_offset * kDsv4HeadDim;
+
+  using Fp8Vec = Dsv4Vector<uint8_t, kDsv4ElementsPerLane>;
+  using PackedBf16Vec = Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>;
+  PackedBf16Vec output_vec;
+  if (valid_location && lane < kDsv4NopeLanes) {
+    const Fp8Vec input_vec = *reinterpret_cast<const Fp8Vec*>(
+        src_cache + token_data_base + lane * kDsv4ElementsPerLane);
+    const float scale = dsv4_ue8m0_to_float(
+        src_cache[token_scale_base + lane / (kDsv4TileSize /
+                                             kDsv4ElementsPerLane)]);
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_vec.val[i] = dsv4_scaled_pair_to_bf16_rne(
+          input_vec.val[2 * i], input_vec.val[2 * i + 1], scale);
+    }
+  } else if (valid_location) {
+    output_vec = *reinterpret_cast<const PackedBf16Vec*>(
+        src_cache + token_data_base + kDsv4NopeDim +
+        (lane - kDsv4NopeLanes) * sizeof(PackedBf16Vec));
+  } else {
+#pragma unroll
+    for (int i = 0; i < kDsv4ElementsPerLane / 2; ++i) {
+      output_vec.val[i] = 0;
+    }
+  }
+  *reinterpret_cast<PackedBf16Vec*>(
+      output_row + lane * kDsv4ElementsPerLane) = output_vec;
+
+  if (lane == 0) {
+    // Match the existing Triton contract: an in-prefix but out-of-range source
+    // location produces zero KV while retaining its compact destination index.
+    compact_indices[output_offset] = in_valid_prefix
+        ? static_cast<int32_t>(output_offset)
+        : 0;
+  }
+}
+
+
+template <typename index_t, int64_t ExtraPage>
+__global__ void dsv4_gather_combined_kernel(
+    const uint8_t* a, const index_t* ai, const int32_t* al,
+    const uint8_t* b, const index_t* bi, const int32_t* bl,
+    dsv4_bfloat16* out, int32_t* compact,
+    int64_t ak, int64_t bk, int64_t ap, int64_t bp,
+    int64_t astride, int64_t bstride) {
+  const int64_t q = blockIdx.y;
+  const int64_t col = blockIdx.x * kRowsPerBlock + threadIdx.x / kThreadsPerRow;
+  const int lane = threadIdx.x % kThreadsPerRow;
+  const int64_t combined = ak + bk;
+  if (col >= combined) return;
+  if (col < al[q]) {
+    dsv4_gather_one_row<index_t,256>(a,ai,al,out,compact,q,col,ak,combined,col,ap,256,astride,lane);
+  } else if (col < static_cast<int64_t>(al[q]) + bl[q]) {
+    dsv4_gather_one_row<index_t,ExtraPage>(b,bi,bl,out,compact,q,col-al[q],bk,combined,col,bp,ExtraPage,bstride,lane);
+  } else {
+    // One writer per output row, including padding; no overlap at the boundary.
+    using Vec = Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>;
+    Vec zeros{};
+    *reinterpret_cast<Vec*>(out+(q*combined+col)*512+lane*16)=zeros;
+    if (lane==0) compact[q*combined+col]=0;
+  }
+}
+template <typename index_t, int64_t ExtraPage, int Group>
+__global__ __launch_bounds__(4 * Group * 32) void dsv4_gather_query_reuse_kernel(
+    const uint8_t* a, const index_t* ai, const int32_t* al,
+    const uint8_t* b, const index_t* bi, const int32_t* bl,
+    dsv4_bfloat16* out, int32_t* compact,
+    int64_t ak, int64_t bk, int64_t ap, int64_t bp,
+    int64_t astride, int64_t bstride) {
+  constexpr int Rows = 4;
+  const int member = threadIdx.x / (32 * Rows);
+  const int local_col = (threadIdx.x / 32) % Rows;
+  const int lane = threadIdx.x % 32;
+  const int64_t leader = blockIdx.y * Group;
+  const int64_t q = leader + member;
+  const int64_t combined = ak + bk;
+  const int64_t swa_blocks = (ak + Rows - 1) / Rows;
+  if (blockIdx.x < swa_blocks) {
+    const int64_t lead_col = blockIdx.x * Rows + local_col;
+    if (lead_col >= ak) return;
+    const int64_t col = Group == 6 ? (lead_col >= member ? lead_col-member : ak+lead_col-member) : lead_col;
+    if (col < al[q]) {
+      bool share = false;
+      if (member && lead_col < al[leader]) {
+        const int64_t here = ai[q * ak + col];
+        share = here >= 0 && here < ap * 256 && ai[leader * ak + lead_col] == here;
+      }
+      if (share) {
+        if (lane == 0) compact[q * combined + col] = leader * combined + lead_col;
+      } else {
+        dsv4_gather_one_row<index_t,256>(a,ai,al,out,compact,q,col,ak,combined,col,ap,256,astride,lane);
+      }
+    } else {
+      const int64_t output_col = col + bk;
+      using Vec = Dsv4Vector<uint32_t, kDsv4ElementsPerLane / 2>;
+      Vec zeros{};
+      *reinterpret_cast<Vec*>(out+(q*combined+output_col)*512+lane*16)=zeros;
+      if (lane == 0) compact[q * combined + output_col] = 0;
+    }
+  } else {
+    const int64_t col = (blockIdx.x - swa_blocks) * Rows + local_col;
+    if (col >= bk) return;
+    dsv4_gather_one_row<index_t,ExtraPage>(b,bi,bl,out,compact,q,col,bk,combined,al[q]+col,bp,ExtraPage,bstride,lane);
+  }
+}
+
+}  // namespace
+}  // namespace dsv4_compact_detail
+void dsv4_gather_upconvert_combined_k_cache_paged(const torch::Tensor& a,const torch::Tensor& ai,const torch::Tensor& al,
+         const torch::Tensor& b,const torch::Tensor& bi,const torch::Tensor& bl,
+         const torch::Tensor& out,const torch::Tensor& compact,int64_t page) {
+  TORCH_CHECK(page==2 || page==64 || page==128 || page==256, "extra page must be 2, 64, 128 or 256");
+  TORCH_CHECK(a.is_cuda() && b.is_cuda() && a.scalar_type()==at::kByte && b.scalar_type()==at::kByte);
+  TORCH_CHECK(ai.dim()==2 && bi.dim()==2 && ai.size(0)==bi.size(0));
+  TORCH_CHECK(ai.scalar_type()==at::kInt && bi.scalar_type()==at::kInt && al.scalar_type()==at::kInt && bl.scalar_type()==at::kInt);
+  TORCH_CHECK(ai.is_contiguous() && bi.is_contiguous() && al.is_contiguous() && bl.is_contiguous());
+  const int64_t q=ai.size(0), ak=ai.size(1), bk=bi.size(1), k=ak+bk;
+  TORCH_CHECK(al.numel()==q && bl.numel()==q);
+  TORCH_CHECK(out.scalar_type()==at::kBFloat16 && out.is_contiguous() && out.numel()==q*k*512);
+  TORCH_CHECK(compact.scalar_type()==at::kInt && compact.is_contiguous() && compact.numel()==q*k);
+  for (const auto& t : {ai,al,b,bi,bl,out,compact}) TORCH_CHECK(t.device()==a.device());
+  TORCH_CHECK(a.dim()==4 && a.size(1)==256 && a.size(2)==1 && a.size(3)==584 && a.stride(0)>=256*584);
+  TORCH_CHECK(b.dim()==4 && b.size(1)==page && b.size(2)==1 && b.size(3)==584 && b.stride(0)>=page*584);
+  TORCH_CHECK(q==0 || k<=std::numeric_limits<int32_t>::max()/q);
+  TORCH_CHECK(a.stride(3)==1 && a.stride(2)==584 && a.stride(1)==584,
+              "SWA packed-cache inner dimensions must be contiguous");
+  TORCH_CHECK(b.stride(3)==1 && b.stride(2)==584 && b.stride(1)==584,
+              "extra packed-cache inner dimensions must be contiguous");
+  if (!q || !k) return;
+  at::cuda::OptionalCUDAGuard guard(a.device());
+  const auto stream=at::cuda::getCurrentCUDAStream();
+  const dim3 grid((k+dsv4_compact_detail::kRowsPerBlock-1)/dsv4_compact_detail::kRowsPerBlock,q);
+#define LAUNCH(P) dsv4_compact_detail::dsv4_gather_combined_kernel<int32_t,P><<<grid,dsv4_compact_detail::kThreadsPerBlock,0,stream>>>(a.data_ptr<uint8_t>(),ai.data_ptr<int32_t>(),al.data_ptr<int32_t>(),b.data_ptr<uint8_t>(),bi.data_ptr<int32_t>(),bl.data_ptr<int32_t>(),reinterpret_cast<dsv4_bfloat16*>(out.data_ptr()),compact.data_ptr<int32_t>(),ak,bk,a.size(0),b.size(0),a.stride(0),b.stride(0))
+  if(page==2) { LAUNCH(2); } else if(page==64) { LAUNCH(64); } else if(page==128) { LAUNCH(128); } else { LAUNCH(256); }
+#undef LAUNCH
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void dsv4_gather_upconvert_query_reuse_k_cache_paged(const torch::Tensor& a,const torch::Tensor& ai,const torch::Tensor& al,
+         const torch::Tensor& b,const torch::Tensor& bi,const torch::Tensor& bl,
+         const torch::Tensor& out,const torch::Tensor& compact,int64_t page,int64_t group) {
+  TORCH_CHECK(group==1 || group==5 || group==6, "invalid reuse group");
+  TORCH_CHECK(page==2 || page==64 || page==128 || page==256, "extra page must be 2, 64, 128 or 256");
+  TORCH_CHECK(a.is_cuda() && b.is_cuda() && a.scalar_type()==at::kByte && b.scalar_type()==at::kByte);
+  TORCH_CHECK(ai.dim()==2 && bi.dim()==2 && ai.size(0)==bi.size(0));
+  TORCH_CHECK(ai.scalar_type()==at::kInt && bi.scalar_type()==at::kInt && al.scalar_type()==at::kInt && bl.scalar_type()==at::kInt);
+  TORCH_CHECK(ai.is_contiguous() && bi.is_contiguous() && al.is_contiguous() && bl.is_contiguous());
+  const int64_t q=ai.size(0), ak=ai.size(1), bk=bi.size(1), k=ak+bk;
+  TORCH_CHECK(al.numel()==q && bl.numel()==q);
+  TORCH_CHECK(out.scalar_type()==at::kBFloat16 && out.is_contiguous() && out.numel()==q*k*512);
+  TORCH_CHECK(compact.scalar_type()==at::kInt && compact.is_contiguous() && compact.numel()==q*k);
+  for (const auto& t : {ai,al,b,bi,bl,out,compact}) TORCH_CHECK(t.device()==a.device());
+  TORCH_CHECK(a.dim()==4 && a.size(1)==256 && a.size(2)==1 && a.size(3)==584 && a.stride(0)>=256*584);
+  TORCH_CHECK(b.dim()==4 && b.size(1)==page && b.size(2)==1 && b.size(3)==584 && b.stride(0)>=page*584);
+  TORCH_CHECK(q==0 || k<=std::numeric_limits<int32_t>::max()/q);
+  TORCH_CHECK(a.stride(3)==1 && a.stride(2)==584 && a.stride(1)==584,
+              "SWA packed-cache inner dimensions must be contiguous");
+  TORCH_CHECK(b.stride(3)==1 && b.stride(2)==584 && b.stride(1)==584,
+              "extra packed-cache inner dimensions must be contiguous");
+  if (!q || !k) return;
+  at::cuda::OptionalCUDAGuard guard(a.device());
+  const auto stream=at::cuda::getCurrentCUDAStream();
+  TORCH_CHECK(q % group == 0, "queries must form complete groups");
+  TORCH_CHECK(group != 6 || ak >= 5, "group 6 requires at least five SWA columns");
+  const dim3 grid((ak+3)/4+(bk+3)/4,q/group);
+#define LAUNCH(P,G) dsv4_compact_detail::dsv4_gather_query_reuse_kernel<int32_t,P,G><<<grid,4*G*32,0,stream>>>(a.data_ptr<uint8_t>(),ai.data_ptr<int32_t>(),al.data_ptr<int32_t>(),b.data_ptr<uint8_t>(),bi.data_ptr<int32_t>(),bl.data_ptr<int32_t>(),reinterpret_cast<dsv4_bfloat16*>(out.data_ptr()),compact.data_ptr<int32_t>(),ak,bk,a.size(0),b.size(0),a.stride(0),b.stride(0))
+#define PAGES(G) if(page==2) { LAUNCH(2,G); } else if(page==64) { LAUNCH(64,G); } else if(page==128) { LAUNCH(128,G); } else { LAUNCH(256,G); }
+  if(group==5) { PAGES(5); } else if(group==6) { PAGES(6); } else { PAGES(1); }
+#undef PAGES
+#undef LAUNCH
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+}  // namespace at::native
