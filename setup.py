@@ -605,6 +605,11 @@ def get_extensions():
     for _src_dir, _src_pat in _CSRC_DIRS:
         op_files += glob.glob(f'./csrc/{_src_dir}/{_src_pat}')
 
+    # This kernel defines its own module and needs stricter FP contraction
+    # than lightop.op. Compile it exactly once, in the standalone extension.
+    indexer_prep = "./csrc/kernels/mla/dsv41_indexer_prep.cu"
+    op_files.remove(indexer_prep)
+
     extension = CUDAExtension
     # 迁移后只需要两个搜索根：csrc/ 与 csrc/include/。
     # 跨目录引用一律写成显式相对路径，不再为每个子目录单列一条。
@@ -629,6 +634,11 @@ def get_extensions():
         name="lightop._router_gemm",
         sources=["./csrc/router/router_gemm.cu"],
         extra_compile_args={"nvcc": ["-O3"]},
+    ))
+    extensions.append(extension(
+        name="lightop._dsv41_prep",
+        sources=[indexer_prep],
+        extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "-ffp-contract=off"]},
     ))
     return extensions
 
