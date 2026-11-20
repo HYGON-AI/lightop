@@ -49,6 +49,11 @@ y = lightop.norm.rms_norm(x, weight, 1e-6, out=torch.empty_like(x))
 print(y.shape)  # torch.Size([4, 4096])
 ```
 
+`lightop.activation.fuse_sigmoid_mul_fp8_quant(attn_output, gate)` 将 attention 输出
+乘以 `sigmoid(gate)`，把乘积在 BF16 舍入后按 token 量化为 E4M3FN。支持二维和
+带 stride 的三维 BF16 gate，返回 FP8 激活和每 token 的 FP32 scale。全零行的
+scale 为零。
+
 更多调用方式见 [test/](test/)。
 
 ## 测试

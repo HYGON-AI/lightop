@@ -40,13 +40,18 @@ from .existing import (
 
 from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
 
-_NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
+_LAZY_APIS = {
+    "lm_fuse_silu_mul_quant": ".native",
+    "fused_clamp_smooth": ".native",
+    "fuse_sigmoid_mul_fp8_quant": "._sigmoid_mul_fp8",
+}
 
 
 def __getattr__(name):
-    if name not in _NATIVE_APIS:
+    module = _LAZY_APIS.get(name)
+    if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(f"{__name__}.native"), name)
+    value = getattr(import_module(module, __name__), name)
     globals()[name] = value
     return value
 
@@ -57,6 +62,7 @@ __all__ = [
 
     "AddDropout",
     "DropPath",
+    "fuse_sigmoid_mul_fp8_quant",
     "fuse_silu_and_mul",
     "fuse_silu_and_mul_ep",
     "fuse_silu_mul_clamp_quant",

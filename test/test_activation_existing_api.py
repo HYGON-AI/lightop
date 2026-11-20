@@ -50,7 +50,15 @@ def test_existing_activation_api_is_direct_reexport(name):
 
 def test_activation_public_api_inventory():
     assert set(lightop.activation.__all__) == set(EXISTING_ACTIVATION_APIS + CATEGORY_ONLY_ACTIVATION_APIS) | {
-        "lm_fuse_silu_mul_quant"
+        "lm_fuse_silu_mul_quant",
+        "fused_clamp_smooth",
+        "fuse_sigmoid_mul_fp8_quant",
+        "fuse_silu_mul_clamp_quant",
+        "fuse_silu_mul_clamp_quant_ep",
+        "swiglu_oai_fp8_quant_masked",
+        "swiglu_oai_int8_quant_contiguous",
+        "swiglu_oai_int8_quant_masked",
+        "swiglu_oai_int8_quant_masked_flat",
     }
 
     for name in CATEGORY_ONLY_ACTIVATION_APIS:
