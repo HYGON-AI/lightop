@@ -427,6 +427,20 @@ def test_sampled_paged_mqa_default_disabled():
 @pytest.mark.parametrize("bs", [1, 2, 3, 4, 8, 16, 32])
 @pytest.mark.parametrize("kind", ["normal", "zero", "nonfinite", "invalid_pages", "uneven", "short"])
 def test_sampled_paged_mqa_exact_sets_and_graph(kind, bs):
+    check_sampled_paged_mqa(kind, 9 * bs, 9)
+
+
+@pytest.mark.parametrize(("rows", "rows_per_request", "kind"), [
+    (1, 1, "normal"), (2, 2, "normal"), (3, 3, "normal"), (4, 4, "zero"),
+    (6, 3, "normal"), (7, 4, "invalid_pages"), (8, 4, "normal"),
+    (8, 4, "zero"), (8, 4, "short"), (8, 4, "uneven"),
+    (10, 5, "normal"), (287, 4, "normal"),
+])
+def test_sampled_paged_mqa_query_rows(rows, rows_per_request, kind):
+    check_sampled_paged_mqa(kind, rows, rows_per_request)
+
+
+def check_sampled_paged_mqa(kind, rows, rows_per_request):
     from lightop import op
     from lightop.attention import paged_mqa_logits_persisten, paged_mqa_topk_sampled_int8
     if not torch.cuda.is_available():
@@ -434,7 +448,8 @@ def test_sampled_paged_mqa_exact_sets_and_graph(kind, bs):
     props = torch.cuda.get_device_properties(torch.cuda.current_device())
     if getattr(props, "gcnArchName", "").split(":")[0] != "gfx936":
         pytest.skip("gfx936 required")
-    width, rows, blocks = 262400, 9 * bs, 8216
+    width, blocks = 262400, 8216
+    requests = (rows + rows_per_request - 1) // rows_per_request
     q = torch.empty((rows, 1, 32, 128), device="cuda", dtype=torch.int8)
     packed = torch.empty((blocks, 64, 1, 132), device="cuda", dtype=torch.int8)
     weights = torch.empty((rows, 32), device="cuda", dtype=torch.float32)
@@ -450,8 +465,12 @@ def test_sampled_paged_mqa_exact_sets_and_graph(kind, bs):
         flat[:, 8192:].copy_((torch.rand((blocks, 64), device="cuda") * .01 + .001).contiguous().view(torch.int8))
         weights.uniform_(.001, .01)
         lengths.fill_(width - 17)
-        lengths[9:].fill_(1)
-        tables.copy_(torch.stack([torch.randperm(blocks, device="cuda", dtype=torch.int32)[:width // 64] for _ in range(bs)]).repeat_interleave(9, 0))
+        lengths[9:-1].fill_(1)
+        request_tables = torch.stack([
+            torch.randperm(blocks, device="cuda", dtype=torch.int32)[:width // 64]
+            for _ in range(requests)
+        ])
+        tables.copy_(request_tables.repeat_interleave(rows_per_request, 0)[:rows])
         if kind == "zero":
             weights.zero_()
         elif kind == "nonfinite":

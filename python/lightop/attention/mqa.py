@@ -774,7 +774,7 @@ def paged_mqa_topk_sampled_int8(q, kv, weights, lengths, block_table,
     if not enabled:
         return None
     rows = q.shape[0] if q.dim() == 4 else 0
-    if (not q.is_cuda or q.dtype != torch.int8 or not 0 < rows <= 288 or rows % 9 != 0 or tuple(q.shape[1:]) != (1, 32, 128)
+    if (not q.is_cuda or q.dtype != torch.int8 or not 0 < rows <= 288 or tuple(q.shape[1:]) != (1, 32, 128)
             or not q.is_contiguous() or kv.dtype != torch.int8
             or kv.dim() != 4 or tuple(kv.shape[1:]) != (64, 1, 132)
             or not kv.is_contiguous() or weights.dtype != torch.float32
