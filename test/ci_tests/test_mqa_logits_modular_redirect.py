@@ -11,9 +11,28 @@ import sys
 import lightop
 
 
+def _find_op_modules_json() -> Path:
+    """Locate op_modules.json.
+
+    CI runs this suite against the installed wheel and only sparse-checks out
+    ``test/`` (no repository-root ``configs/``), so prefer the config packaged
+    inside ``lightop`` and fall back to the source tree for in-place dev.
+    """
+    candidates = [
+        Path(lightop.__file__).resolve().parent / "configs" / "op_modules.json",
+        Path(__file__).resolve().parents[2] / "configs" / "op_modules.json",
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise AssertionError(
+        "configs/op_modules.json must exist; checked: "
+        + ", ".join(str(c) for c in candidates)
+    )
+
+
 def test_op_modules_json_declares_mqa_logits():
-    cfg_path = Path(__file__).resolve().parents[2] / "configs" / "op_modules.json"
-    assert cfg_path.is_file(), "configs/op_modules.json must exist"
+    cfg_path = _find_op_modules_json()
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     assert "_mqa_logits" in cfg.get("modules", {})
     assert "csrc/mqa_logits/mqa_logits_pybind.cpp" in cfg["modules"]["_mqa_logits"]["sources"]
