@@ -8,11 +8,13 @@
 #include <cuda_fp16.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/all.h>
+#include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAGuard.h>
 
 #include <cfloat>
 #include <climits>
 #include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstdlib>
 #include <type_traits>
@@ -41,12 +43,26 @@
 // batch sizes (4097 ≡ 1 mod 1024, so it was a no-op for M=1024 workloads).
 #define GRID_REMAP_MULT 16381
 
-__device__ __forceinline__ int map_row_idx(int block_idx, int block_count)
+// The remap is a bijection on [0, block_count) only when the multiplier and the
+// block count are coprime; otherwise some rows are never visited and others are
+// processed twice (silently wrong output). Host code disables the remap whenever
+// that precondition fails.
+__device__ __forceinline__ int map_row_idx(int block_idx, int block_count, bool use_remap)
 {
-    if (block_count <= 1)
+    if (block_count <= 1 || !use_remap)
         return block_idx;
     const uint32_t bc = static_cast<uint32_t>(block_count);
     return static_cast<int>((static_cast<uint64_t>(block_idx) * GRID_REMAP_MULT) % bc);
+}
+
+static constexpr unsigned long long grid_remap_gcd(unsigned long long a, unsigned long long b)
+{
+    return b == 0 ? a : grid_remap_gcd(b, a % b);
+}
+
+static bool grid_remap_is_bijective(int64_t block_count)
+{
+    return grid_remap_gcd(GRID_REMAP_MULT, static_cast<unsigned long long>(block_count)) == 1ULL;
 }
 
 template <typename T>
@@ -144,9 +160,10 @@ __global__ __launch_bounds__(512, 2) void reduce_minmax_row_kernel(
     T* __restrict__ values,
     int64_t* __restrict__ indices,
     int M,
-    int N)
+    int N,
+    bool use_remap)
 {
-    int row = map_row_idx(blockIdx.x, M);
+    int row = map_row_idx(blockIdx.x, M, use_remap);
     if (row >= M)
         return;
 
@@ -257,11 +274,24 @@ static void reduce_minmax_opt_impl(
     TORCH_CHECK(values.numel() >= input.size(0) && indices.numel() >= input.size(0),
                 "custom_ops: values/indices size mismatch");
     TORCH_CHECK(values.scalar_type() == input.scalar_type(), "custom_ops: values dtype mismatch");
+    TORCH_CHECK(values.device() == input.device() && indices.device() == input.device(),
+                "custom_ops: input/values/indices must live on the same device");
 
-    int M = input.size(0);
-    int N = input.size(1);
+    // The kernel indexes rows/columns with int, and launches one CTA per row.
+    TORCH_CHECK(input.size(0) <= static_cast<int64_t>(std::numeric_limits<int>::max()) &&
+                    input.size(1) <= static_cast<int64_t>(std::numeric_limits<int>::max()),
+                "custom_ops: dimensions exceed int range");
 
+    int M = static_cast<int>(input.size(0));
+    int N = static_cast<int>(input.size(1));
+
+    // Launch on the input's device and stream: without the guard a call on a
+    // non-current device would queue the kernel on the wrong stream.
+    const at::cuda::OptionalCUDAGuard device_guard(input.device());
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+    // Row remap only preserves coverage when it is a bijection on [0, M).
+    const bool use_remap = grid_remap_is_bijective(M);
 
     auto launch_kernel = [&](int block_size) {
         dim3 block(block_size);
@@ -275,7 +305,8 @@ static void reduce_minmax_opt_impl(
         reinterpret_cast<scalar_t_device*>(values.data_ptr<at::Half>()),
         indices.data_ptr<int64_t>(),
         M,
-        N);;
+        N,
+        use_remap);
         }
         else if (input.scalar_type() == at::kBFloat16)
         {
@@ -285,7 +316,8 @@ static void reduce_minmax_opt_impl(
         reinterpret_cast<scalar_t_device*>(values.data_ptr<at::BFloat16>()),
         indices.data_ptr<int64_t>(),
         M,
-        N);;
+        N,
+        use_remap);
         }
         else if (input.scalar_type() == at::kFloat)
         {
@@ -296,12 +328,16 @@ static void reduce_minmax_opt_impl(
         values.data_ptr<float>(),
         indices.data_ptr<int64_t>(),
         M,
-        N);;
+        N,
+        use_remap);
         }
         else
         {
             TORCH_CHECK(false, "custom_ops: unsupported dtype (fp16/bf16/fp32 only)");
         }
+        // Surface launch failures (bad config, out of resources) at the call site
+        // instead of at some later unrelated synchronization point.
+        C10_CUDA_KERNEL_LAUNCH_CHECK();
     };
 
     // Smoother ladder than 128<->512 at N=16384 (that cliff showed up as mem_bw jumps).
@@ -354,6 +390,8 @@ static void _check_reduce_minmax_io(
   TORCH_CHECK(indices.scalar_type() == at::kLong, "reduce_minmax_opt: indices must be int64");
   TORCH_CHECK(values.numel() >= input.size(0) && indices.numel() >= input.size(0),
               "reduce_minmax_opt: values/indices length >= M");
+  TORCH_CHECK(values.device() == input.device() && indices.device() == input.device(),
+              "reduce_minmax_opt: input/values/indices must be on the same device");
 }
 
 std::tuple<torch::Tensor, torch::Tensor> reduce_max_opt(const torch::Tensor& input) {

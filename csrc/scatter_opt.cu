@@ -114,7 +114,14 @@ __global__ void scatter_special_large_dim(
     int64_t chunk_elems = ((cols / blocks_per_row) / kElems) * kElems;
     if (chunk_elems < kElems) chunk_elems = kElems;
     int64_t offset = sub_block * chunk_elems;
-    int64_t actual_chunk = std::min(chunk_elems, cols - offset);
+    // blocks_per_row and chunk_elems both round down, so their product can cover
+    // fewer than `cols` elements (float cols=1025 → 1 block × 1024). Let the last
+    // sub-block absorb the remainder so the row tail is always written; earlier
+    // sub-blocks keep their own chunk, so ranges never overlap.
+    const int64_t end = (sub_block + 1 == blocks_per_row)
+                            ? cols
+                            : std::min((sub_block + 1) * chunk_elems, cols);
+    int64_t actual_chunk = end - offset;
     if (actual_chunk <= 0) return;
     const scalar_t* src_ptr = src + row * cols + offset;
     scalar_t* dst_ptr = dst + dst_row * cols + offset;

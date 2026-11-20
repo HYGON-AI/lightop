@@ -64,29 +64,6 @@ __device__ __forceinline__ void merge_two_sorted(
     }
 }
 
-template <typename scalar_t, int K, int I>
-struct ArgMinUnroll {
-    __device__ __forceinline__ static int find(const scalar_t* vals, int cur_min_pos, scalar_t cur_min_val) {
-        scalar_t v = vals[I];
-        bool is_smaller = (v < cur_min_val);
-        cur_min_val = is_smaller ? v : cur_min_val;
-        cur_min_pos = is_smaller ? I : cur_min_pos;
-        return ArgMinUnroll<scalar_t, K, I + 1>::find(vals, cur_min_pos, cur_min_val);
-    }
-};
-
-template <typename scalar_t, int K>
-struct ArgMinUnroll<scalar_t, K, K> {
-    __device__ __forceinline__ static int find(const scalar_t*, int cur_min_pos, scalar_t) {
-        return cur_min_pos;
-    }
-};
-
-template <typename scalar_t, int K>
-__device__ __forceinline__ int find_argmin_unrolled(const scalar_t* vals) {
-    return ArgMinUnroll<scalar_t, K, 1>::find(vals, 0, vals[0]);
-}
-
 constexpr int WARP_SIZE = 64;
 constexpr int WARPS_PER_BLOCK = 4;
 constexpr int BLOCK_SIZE = WARP_SIZE * WARPS_PER_BLOCK;
@@ -109,6 +86,40 @@ constexpr int K8_UNROLL_THRESHOLD = 32768;
 template<typename T>
 __device__ __forceinline__ T safe_neg_inf() {
     return std::numeric_limits<T>::lowest();
+}
+
+template<typename T>
+__device__ __forceinline__ T safe_pos_inf() {
+    return std::numeric_limits<T>::max();
+}
+
+// Replace the current minimum of the running top-K buffer with `val` and return the
+// buffer's new minimum, so callers can test candidates against an always-current
+// threshold. Only the evicted slot changes, hence new_min = min(second_min, val);
+// tracking (min, argmin, second_min) in the same pass costs no extra scan.
+// Keeping a stale (smaller) threshold instead would admit values below the true
+// minimum, evicting a legitimate top-K element and silently corrupting the result.
+template <typename cmp_t, int K>
+__device__ __forceinline__ cmp_t buffer_insert_min(cmp_t* vals, int* idxs, cmp_t val, int idx) {
+    int mp = 0;
+    cmp_t cur_min = vals[0];
+    // Start from +inf so the scan yields the smallest slot other than `mp` even when
+    // vals[0] itself holds the minimum; a partly filled buffer (all -inf slots) then
+    // still reports -inf as its minimum.
+    cmp_t second_min = safe_pos_inf<cmp_t>();
+    #pragma unroll
+    for (int i = 1; i < K; ++i) {
+        if (vals[i] < cur_min) {
+            second_min = cur_min;
+            cur_min = vals[i];
+            mp = i;
+        } else if (vals[i] < second_min) {
+            second_min = vals[i];
+        }
+    }
+    vals[mp] = val;
+    idxs[mp] = idx;
+    return second_min < val ? second_min : val;
 }
 
 template <typename scalar_t>
@@ -597,31 +608,18 @@ __global__ void topk_kernel_k8(
     #pragma unroll
     for(int i=0;i<K;++i){buf_vals[i]=safe_neg_inf<cmp_t>();buf_idxs[i]=-1;}
     cmp_t buf_min=safe_neg_inf<cmp_t>();
-    bool buf_dirty=false;
 
     int vec_dim=dim_size/VW;
     for(int j=lane;j<vec_dim;j+=WARP_SIZE){
         scalar_t vals[VW];load_vec<scalar_t,VW>(&row[j*VW],vals);
         #pragma unroll
         for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vals[v]);
-            if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-                #pragma unroll
-                for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-                buf_vals[mp]=val;buf_idxs[mp]=j*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,j*VW+v);}}
     }
     for(int j=vec_dim*VW+lane;j<dim_size;j+=WARP_SIZE){
         cmp_t val=static_cast<cmp_t>(row[j]);
-        if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=j;buf_dirty=true;}
+        if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,j);}
     }
-    if(buf_dirty){buf_min=buf_vals[0];
-    #pragma unroll
-    for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}}
 
     bitonic_sort<cmp_t,K>(buf_vals,buf_idxs);
 
@@ -677,7 +675,6 @@ __global__ void topk_kernel_k8_unroll4(
     #pragma unroll
     for(int i=0;i<K;++i){buf_vals[i]=safe_neg_inf<cmp_t>();buf_idxs[i]=-1;}
     cmp_t buf_min=safe_neg_inf<cmp_t>();
-    bool buf_dirty=false;
 
     int vec_dim=dim_size/VW;
     int stride=WARP_SIZE;
@@ -692,64 +689,33 @@ __global__ void topk_kernel_k8_unroll4(
         load_vec<scalar_t,VW>(&row[(j+stride*3)*VW],vd);
 
         #pragma unroll
-        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(va[v]);if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=j*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(va[v]);
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,j*VW+v);}}
 
         #pragma unroll
-        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vb[v]);if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=(j+stride)*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vb[v]);
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,(j+stride)*VW+v);}}
 
         #pragma unroll
-        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vc[v]);if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=(j+stride*2)*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vc[v]);
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,(j+stride*2)*VW+v);}}
 
         #pragma unroll
-        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vd[v]);if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=(j+stride*3)*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vd[v]);
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,(j+stride*3)*VW+v);}}
     }
 
     for(;j<vec_dim;j+=stride){
         scalar_t vals[VW];load_vec<scalar_t,VW>(&row[j*VW],vals);
         #pragma unroll
-        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vals[v]);if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=j*VW+v;buf_dirty=true;}}
-        if(buf_dirty){buf_min=buf_vals[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}buf_dirty=false;}
+        for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vals[v]);
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,j*VW+v);}}
     }
 
     for(int s=vec_dim*VW+lane;s<dim_size;s+=WARP_SIZE){
         cmp_t val=static_cast<cmp_t>(row[s]);
-        if(val>buf_min){int mp=0;cmp_t cm=buf_vals[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf_vals[i]<cm){cm=buf_vals[i];mp=i;}}
-            buf_vals[mp]=val;buf_idxs[mp]=s;buf_dirty=true;}
+        if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf_vals,buf_idxs,val,s);}
     }
-    if(buf_dirty){buf_min=buf_vals[0];
-    #pragma unroll
-    for(int i=1;i<K;++i){if(buf_vals[i]<buf_min)buf_min=buf_vals[i];}}
 
     bitonic_sort<cmp_t,K>(buf_vals,buf_idxs);
 
@@ -808,25 +774,19 @@ __global__ void topk_kernel_k16(
         cmp_t buf[K];int idx[K];
         #pragma unroll
         for(int i=0;i<K;++i){buf[i]=neg_inf;idx[i]=-1;}
-        cmp_t buf_min=neg_inf;bool dirty=false;
+        cmp_t buf_min=neg_inf;
 
         int vec_dim=dim_size/VW;
         for(int j=lane;j<vec_dim;j+=WARP_SIZE){
             scalar_t vals[VW];load_vec<scalar_t,VW>(&row[j*VW],vals);
             #pragma unroll
             for(int v=0;v<VW;++v){cmp_t val=static_cast<cmp_t>(vals[v]);
-                if(val>buf_min){int mp=find_argmin_unrolled<cmp_t,K>(buf);buf[mp]=val;idx[mp]=j*VW+v;dirty=true;}}
-            if(dirty){buf_min=buf[0];
-            #pragma unroll
-            for(int i=1;i<K;++i){if(buf[i]<buf_min)buf_min=buf[i];}dirty=false;}
+                if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf,idx,val,j*VW+v);}}
         }
         for(int j=vec_dim*VW+lane;j<dim_size;j+=WARP_SIZE){
             cmp_t val=static_cast<cmp_t>(row[j]);
-            if(val>buf_min){int mp=find_argmin_unrolled<cmp_t,K>(buf);buf[mp]=val;idx[mp]=j;dirty=true;}
+            if(val>buf_min){buf_min=buffer_insert_min<cmp_t,K>(buf,idx,val,j);}
         }
-        if(dirty){buf_min=buf[0];
-        #pragma unroll
-        for(int i=1;i<K;++i){if(buf[i]<buf_min)buf_min=buf[i];}}
 
         bitonic_sort<cmp_t,K>(buf,idx);
         #pragma unroll
@@ -838,7 +798,6 @@ __global__ void topk_kernel_k16(
         for(int i=0;i<HALF_K;++i){buf_a[i]=neg_inf;idx_a[i]=-1;buf_b[i]=neg_inf;idx_b[i]=-1;}
 
         cmp_t min_a=neg_inf,min_b=neg_inf;
-        bool dirty_a=false,dirty_b=false;
         int vec_dim=dim_size/VW;
 
         for(int j=lane;j<vec_dim;j+=WARP_SIZE){
@@ -846,27 +805,15 @@ __global__ void topk_kernel_k16(
             #pragma unroll
             for(int v=0;v<VW;++v){
                 cmp_t val=static_cast<cmp_t>(vals[v]);int idx_val=j*VW+v;
-                if(val>min_a){int mp=find_argmin_unrolled<cmp_t,HALF_K>(buf_a);buf_a[mp]=val;idx_a[mp]=idx_val;dirty_a=true;}
-                else if(val>min_b){int mp=find_argmin_unrolled<cmp_t,HALF_K>(buf_b);buf_b[mp]=val;idx_b[mp]=idx_val;dirty_b=true;}
+                if(val>min_a){min_a=buffer_insert_min<cmp_t,HALF_K>(buf_a,idx_a,val,idx_val);}
+                else if(val>min_b){min_b=buffer_insert_min<cmp_t,HALF_K>(buf_b,idx_b,val,idx_val);}
             }
-            if(dirty_a){min_a=buf_a[0];
-            #pragma unroll
-            for(int i=1;i<HALF_K;++i){if(buf_a[i]<min_a)min_a=buf_a[i];}dirty_a=false;}
-            if(dirty_b){min_b=buf_b[0];
-            #pragma unroll
-            for(int i=1;i<HALF_K;++i){if(buf_b[i]<min_b)min_b=buf_b[i];}dirty_b=false;}
         }
         for(int j=vec_dim*VW+lane;j<dim_size;j+=WARP_SIZE){
             cmp_t val=static_cast<cmp_t>(row[j]);
-            if(val>min_a){int mp=find_argmin_unrolled<cmp_t,HALF_K>(buf_a);buf_a[mp]=val;idx_a[mp]=j;dirty_a=true;}
-            else if(val>min_b){int mp=find_argmin_unrolled<cmp_t,HALF_K>(buf_b);buf_b[mp]=val;idx_b[mp]=j;dirty_b=true;}
+            if(val>min_a){min_a=buffer_insert_min<cmp_t,HALF_K>(buf_a,idx_a,val,j);}
+            else if(val>min_b){min_b=buffer_insert_min<cmp_t,HALF_K>(buf_b,idx_b,val,j);}
         }
-        if(dirty_a){min_a=buf_a[0];
-        #pragma unroll
-        for(int i=1;i<HALF_K;++i){if(buf_a[i]<min_a)min_a=buf_a[i];}}
-        if(dirty_b){min_b=buf_b[0];
-        #pragma unroll
-        for(int i=1;i<HALF_K;++i){if(buf_b[i]<min_b)min_b=buf_b[i];}}
 
         bitonic_sort<cmp_t,HALF_K>(buf_a,idx_a);
         bitonic_sort<cmp_t,HALF_K>(buf_b,idx_b);

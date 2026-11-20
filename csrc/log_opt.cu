@@ -355,6 +355,11 @@ void log_opt_impl(torch::Tensor input, torch::Tensor output) {
         input.scalar_type() == at::kHalf || input.scalar_type() == at::kBFloat16 ||
             input.scalar_type() == at::kFloat,
         "log_opt: only float16/bfloat16/float32 are supported");
+    // The kernel runs on input's device/stream, so an output living elsewhere would
+    // be written through a foreign pointer.
+    TORCH_CHECK(
+        output.device() == input.device(),
+        "log_opt: input and output must live on the same device");
 
     int64_t n = input.numel();
     if (n == 0) {
