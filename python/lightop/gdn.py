@@ -17,9 +17,6 @@ bfloat16 tensors through :func:`f32` (or use the wrappers here, which cast for
 you) or the kernel runs off the buffer and every head's decay is wrong.
 """
 
-import importlib.machinery
-import importlib.util
-from pathlib import Path
 from typing import Optional, Tuple
 
 import torch
@@ -43,51 +40,19 @@ def _stream(device) -> int:
 _EXT = None
 
 
-def _gdn_arch():
-    """The current device's architecture (``gfx938``), or None without a GPU."""
-    try:
-        name = torch.cuda.get_device_properties(
-            torch.cuda.current_device()
-        ).gcnArchName
-        return str(name).split(":")[0]
-    except Exception:  # noqa: BLE001 - CPU hosts have no arch directory
-        return None
-
-
-def _candidates(lib_dir, arch):
-    """Per-arch kernel first, then the flat layout older wheels shipped."""
-    paths = []
-    if arch:
-        paths.extend(
-            lib_dir / "gdn" / arch / ("_gdn" + suffix)
-            for suffix in importlib.machinery.EXTENSION_SUFFIXES
-        )
-    paths.extend(
-        lib_dir / ("_gdn" + suffix)
-        for suffix in importlib.machinery.EXTENSION_SUFFIXES
-    )
-    return paths
-
-
 def _ext():
-    """Load the prebuilt kernel module shipped under lib/ (see build_gdn.sh)."""
+    """Load the package's aicc-built _gdn extension."""
     global _EXT
     if _EXT is not None:
         return _EXT
-    from .utils import resource_path
-
-    lib_dir = Path(resource_path("lib"))
-    for path in _candidates(lib_dir, _gdn_arch()):
-        if path.is_file():
-            spec = importlib.util.spec_from_file_location("lightop._gdn", path)
-            module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            _EXT = module
-            return _EXT
-    raise RuntimeError(
-        "lightop.gdn: no _gdn*.so under lib/gdn/<arch>/ or lib/; "
-        "run scripts/build_gdn.sh"
-    )
+    try:
+        from . import _gdn as built
+    except ImportError as exc:
+        raise RuntimeError(
+            "lightop.gdn: lightop._gdn is missing; rebuild the wheel with aicc"
+        ) from exc
+    _EXT = built
+    return _EXT
 
 
 def f32(x: Tensor) -> Tensor:

@@ -21,7 +21,7 @@
 // （只有 bank2 对），`"+v"` 的读改写形式更是全 0。这套工具链上不可靠，故用
 // `__shfl_xor`（宽 8，组内连续 8 lane）。
 //
-// 构建：scripts/build_gdn.sh（aicc + 调优 flags，产物 lib/gdn/<arch>/_gdn<ext>.so）。
+// 构建：setup.py 的独立 lightop._gdn target（aicc + 调优 flags）。
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_bfloat16.h>

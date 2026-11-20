@@ -35,8 +35,6 @@ python3 setup.py install
 
 脚本会检查 DTK、AICC 与 HIP 版 PyTorch，并安装其余编译依赖，产物位于 `dist-manylinux/`。可通过 `./scripts/build_hcu_wheel.sh --help` 查看参数，或用 `--jobs`（或 `MAX_JOBS`）控制编译并行度，例如 `./scripts/build_hcu_wheel.sh --jobs 32`。
 
-> **GDN 预编译内核的 Python ABI**：仓库中随附的 `lib/gdn/gfx938/_gdn.cpython-310-*.so` 按 CPython 3.10 的 ABI 构建，只能由 Python 3.10 加载。使用其他解释器版本时，请先执行 `./scripts/build_gdn.sh` 重新编译，脚本会用当前解释器的后缀重新生成 `_gdn*.so`；`setup.py` 不参与该产物的构建。
-
 ## 使用示例
 
 通过归一化分类 `lightop.norm` 调用 RMSNorm；HIP 版 PyTorch 同样使用 `device="cuda"` 访问 HCU：

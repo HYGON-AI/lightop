@@ -30,7 +30,7 @@
 #include <utility>
 
 extern "C" {
-#include "gdn/gdn_recurrent.h"
+#include "kernels/gdn/gdn_recurrent.h"
 }
 
 namespace lightop::gdn {
