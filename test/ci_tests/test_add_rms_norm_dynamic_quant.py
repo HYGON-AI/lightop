@@ -6,8 +6,15 @@ after_norm: kernel stores (x+res)*weight *without* RMS; reported separately.
 """
 from __future__ import annotations
 
+import pytest
 import torch
+
 from lightop import add_rms_norm_dynamic_quant
+
+
+pytestmark = pytest.mark.skipif(
+    not torch.cuda.is_available(), reason="requires HCU"
+)
 
 
 def _torch_add_rms_norm_dynamic_quant(
@@ -86,6 +93,30 @@ def run_case(num_tokens: int, hidden: int, mode: int, seed: int = 0) -> dict:
         **extra,
         "ok": ok,
     }
+
+
+@pytest.mark.parametrize(("num_tokens", "hidden"), ((16, 2048), (256, 4096), (2048, 5120)))
+@pytest.mark.parametrize("mode", (0, 1, 2))
+def test_add_rms_norm_dynamic_quant(num_tokens: int, hidden: int, mode: int) -> None:
+    """Primary contract: quantized tokens, per-token scale and (mode 1) after_res."""
+    result = run_case(num_tokens, hidden, mode, seed=1)
+    assert result["q_max_diff"] <= 1, result
+    assert result["scale_max_diff"] < 2e-3, result
+    if mode == 1:
+        assert result["after_res"] <= 2e-2, result
+
+
+@pytest.mark.xfail(
+    reason="mode=2 after_norm side buffer does not follow (x+res)*weight on this build; "
+    "reported separately instead of failing the quantized-output contract",
+    strict=False,
+)
+@pytest.mark.parametrize(("num_tokens", "hidden"), ((16, 2048), (256, 4096)))
+def test_add_rms_norm_dynamic_quant_after_norm_matches_kernel_semantics(
+    num_tokens: int, hidden: int
+) -> None:
+    result = run_case(num_tokens, hidden, 2, seed=1)
+    assert result["after_norm_vs_x_times_w"] <= 2e-2, result
 
 
 def main() -> int:

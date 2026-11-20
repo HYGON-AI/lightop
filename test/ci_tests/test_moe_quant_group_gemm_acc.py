@@ -12,9 +12,12 @@ import itertools
 import os
 import sys
 
+import pytest
 import torch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "moe_groupgemm_w4a8"))
+sys.path.insert(
+    0, os.path.join(os.path.dirname(os.path.dirname(__file__)), "moe_groupgemm_w4a8")
+)
 from w4a8_moe_groupgemm_marlin_quant import w4a8_2_marlin_weight  # noqa: E402
 
 from lightop.moe import moe_groupgemm_marlin_w4a8
@@ -119,22 +122,48 @@ def run_case(
     }
 
 
-def main():
-    cases = [
-        # usable production path: BALANCED_M_GRID with real scales
-        dict(experts=8, tokens_per_expert=16, k=2048, n=512, mode=1002, unit_scale=False),
-        dict(experts=8, tokens_per_expert=128, k=2048, n=1024, mode=1002, unit_scale=False),
-        dict(experts=16, tokens_per_expert=64, k=2048, n=2048, mode=1002, unit_scale=False),
-        dict(experts=32, tokens_per_expert=8, k=4096, n=3072, mode=1002, unit_scale=False),
-        # xpu-perf path: MODE 1016 + ones scales
-        dict(experts=8, tokens_per_expert=16, k=2048, n=512, mode=1016, unit_scale=True),
-        dict(experts=8, tokens_per_expert=128, k=2048, n=1024, mode=1016, unit_scale=True),
-        dict(experts=16, tokens_per_expert=64, k=2048, n=2048, mode=1016, unit_scale=True),
-        dict(experts=32, tokens_per_expert=8, k=4096, n=3072, mode=1016, unit_scale=True),
-        # negative control: 1016 with real scales must fail
-        dict(experts=8, tokens_per_expert=128, k=2048, n=512, mode=1016, unit_scale=False),
-    ]
+CASES = [
+    # usable production path: BALANCED_M_GRID with real scales
+    dict(experts=8, tokens_per_expert=16, k=2048, n=512, mode=1002, unit_scale=False),
+    dict(experts=8, tokens_per_expert=128, k=2048, n=1024, mode=1002, unit_scale=False),
+    dict(experts=16, tokens_per_expert=64, k=2048, n=2048, mode=1002, unit_scale=False),
+    dict(experts=32, tokens_per_expert=8, k=4096, n=3072, mode=1002, unit_scale=False),
+    # xpu-perf path: MODE 1016 + ones scales
+    dict(experts=8, tokens_per_expert=16, k=2048, n=512, mode=1016, unit_scale=True),
+    dict(experts=8, tokens_per_expert=128, k=2048, n=1024, mode=1016, unit_scale=True),
+    dict(experts=16, tokens_per_expert=64, k=2048, n=2048, mode=1016, unit_scale=True),
+    dict(experts=32, tokens_per_expert=8, k=4096, n=3072, mode=1016, unit_scale=True),
+    # negative control: 1016 with real scales must fail
+    dict(experts=8, tokens_per_expert=128, k=2048, n=512, mode=1016, unit_scale=False),
+]
 
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires HCU")
+@pytest.mark.parametrize("case", CASES, ids=lambda c: f"mode{c['mode']}_unit{c['unit_scale']}_E{c['experts']}_tpe{c['tokens_per_expert']}_N{c['n']}")
+def test_moe_quant_group_gemm_acc(case: dict) -> None:
+    if case["mode"] == 1016 and not case["unit_scale"]:
+        # Negative control: FAST_* variants are only valid with unit scales, so the
+        # call must either raise or produce values outside tolerance.
+        try:
+            result = run_case(**case, seed=1)
+        except RuntimeError:
+            return
+        close = (
+            result["vs_ref_1000"]["allclose"]
+            and result["vs_ref_opt"]["allclose"]
+            and result["vs_1000"]["allclose"]
+        )
+        assert not close, result
+        return
+
+    result = run_case(**case, seed=1)
+    assert result["vs_ref_1000"]["allclose"], result
+    assert result["vs_ref_opt"]["allclose"], result
+    assert result["vs_1000"]["allclose"], result
+
+
+def main():
+    cases = CASES
     failed = 0
     for i, c in enumerate(cases):
         expect_fail = c["mode"] == 1016 and not c["unit_scale"]
