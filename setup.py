@@ -582,6 +582,7 @@ def get_extensions():
         ('lmslimquant_native', '*.cpp'),
         ('lmslimquant_native/awq', '*.cu'),
         ('lmslimquant_native/gptq', '*.cu'),
+        ('lmslimquant_native/hipblaslt', '*.cu'),
         ('lmslimquant_native/smoothquant', '*.cpp'),
         ('lmslimquant_native/torch_bridge', '*.cu'),
         ('moe_gemm/w16a16', '*.cu'),
@@ -603,6 +604,11 @@ def get_extensions():
     op_files = []
     for _src_dir, _src_pat in _CSRC_DIRS:
         op_files += glob.glob(f'./csrc/{_src_dir}/{_src_pat}')
+
+    # This kernel defines its own module and needs stricter FP contraction
+    # than lightop.op. Compile it exactly once, in the standalone extension.
+    indexer_prep = "./csrc/kernels/mla/dsv41_indexer_prep.cu"
+    op_files.remove(indexer_prep)
 
     extension = CUDAExtension
     # 迁移后只需要两个搜索根：csrc/ 与 csrc/include/。
@@ -628,6 +634,11 @@ def get_extensions():
         name="lightop._router_gemm",
         sources=["./csrc/router/router_gemm.cu"],
         extra_compile_args={"nvcc": ["-O3"]},
+    ))
+    extensions.append(extension(
+        name="lightop._dsv41_prep",
+        sources=[indexer_prep],
+        extra_compile_args={"cxx": ["-O3"], "nvcc": ["-O3", "-ffp-contract=off"]},
     ))
     return extensions
 

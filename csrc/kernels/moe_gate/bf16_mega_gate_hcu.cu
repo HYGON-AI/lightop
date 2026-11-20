@@ -6,6 +6,7 @@
 #include <c10/cuda/CUDAGuard.h>
 #include <hip/hip_runtime.h>
 
+#include <cstring>
 #include <mutex>
 #include <unordered_map>
 
@@ -15,17 +16,24 @@ namespace at {
 namespace native {
 namespace {
 
+#include "bf16_mega_gate_mls.cuh"
+
 // Four waves produce FP32 logits with the baseline K reduction order.
-// The last producer CTA uses all eight waves, two tokens per wave, for Top-K.
-template <int EXPERT_CAPACITY, int TOP_K, int HIDDEN = 0, bool PADDED = true>
-__global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
+// The last producer CTA uses all resident waves, two tokens per wave, for Top-K.
+template <int EXPERT_CAPACITY, int TOP_K, int HIDDEN = 0, bool PADDED = true,
+          int TILE_M = 16, int TILE_N = 32, int THREADS = 512,
+          bool USE_MLS = false>
+__global__ __launch_bounds__(THREADS) void bf16_mega_gate_kernel(
     const BFloat16* __restrict__ x, const BFloat16* __restrict__ w,
     const float* __restrict__ bias, const bool* __restrict__ mask,
     float* __restrict__ logits, float* __restrict__ routes,
     int* __restrict__ counters, float* __restrict__ weights,
-    int64_t* __restrict__ ids, int m, int num_experts, int hidden_size,
-    bool renormalize, float scale, bool apply_scale) {
-  constexpr int BN = 32, BM = 16, NT = BN / 16;
+    int64_t* __restrict__ ids, const int64_t* __restrict__ physical_map, int m, int num_experts, int hidden_size,
+    bool renormalize, float scale, bool apply_scale, bool round_logits_to_bf16) {
+  static_assert(!USE_MLS || (EXPERT_CAPACITY == 384 && TOP_K == 6 &&
+                             HIDDEN == 5120 && !PADDED && TILE_M == 16 &&
+                             TILE_N == 32 && THREADS == 512));
+  constexpr int BN = TILE_N, BM = TILE_M, NT = BN / 16;
   const int experts = PADDED ? num_experts : EXPERT_CAPACITY;
   const int hidden = HIDDEN ? HIDDEN : hidden_size;
   const int producer_ctas = (experts + BN - 1) / BN;
@@ -38,22 +46,58 @@ __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
   float4_t acc[NT];
 #pragma unroll
   for (int tile = 0; tile < NT; ++tile) acc[tile] = {0, 0, 0, 0};
-  if (wave < 4) {
-    for (int base = wave * 32; base < hidden; base += 128) {
-      const int offset = base + col_group * 8;
-      half4x2 av = {};
-      if (valid_row)
-        av = *reinterpret_cast<const half4x2*>(x + ar * hidden + offset);
-#pragma unroll
-      for (int tile = 0; tile < NT; ++tile) {
-        const int br = blockIdx.x * BN + tile * 16 + row;
-        half4x2 bv = {};
-        if (!PADDED || br < experts)
-          bv = *reinterpret_cast<const half4x2*>(w + br * hidden + offset);
-        // Swapping operands makes each fragment span four tokens, so the
-        // gate can load consecutive expert scores without a transpose pass.
-        builtin_amdgcn_mmac<false>(bv.data[0], av.data[0], acc[tile]);
-        builtin_amdgcn_mmac<false>(bv.data[1], av.data[1], acc[tile]);
+#if defined(__gfx938__)
+  // Wave-private tiles: X is 16x32 BF16 and W is 32x32 BF16.
+  // One stage is faster than two for this small producer tile.
+  __shared__ __align__(1024) short mls_tiles[USE_MLS ? 4 * 1536 : 1];
+  if (USE_MLS && blockIdx.y * BM + BM <= m) {
+    if constexpr (USE_MLS) {
+      if (wave < 4) {
+        short* tile = mls_tiles + wave * 1536;
+        auto issue = [&](int base) {
+          mega_gate_mls::load(x + blockIdx.y * BM * hidden + base, tile, hidden);
+          mega_gate_mls::load_w(w + blockIdx.x * BN * hidden + base, tile + 512, hidden);
+        };
+        issue(wave * 32);
+        for (int base = wave * 32; base < hidden; base += 128) {
+          mega_gate_mls::wait_load();
+          auto ar = mega_gate_mls::read(tile);
+          auto br0 = mega_gate_mls::read_direct(tile + 512);
+          auto br1 = mega_gate_mls::read_direct(tile + 1024);
+          mega_gate_mls::wait_read();
+          half4x2 av = mega_gate_mls::fragment(ar, lane);
+          half4x2 bv0 = mega_gate_mls::fragment_direct(br0, lane);
+          half4x2 bv1 = mega_gate_mls::fragment_direct(br1, lane);
+          // The DS reads are complete before this wave reuses its LDS region.
+          // Prefetch overlaps the current iteration's four MMAC instructions.
+          if (base + 128 < hidden) issue(base + 128);
+          builtin_amdgcn_mmac<false>(bv0.data[0], av.data[0], acc[0]);
+          builtin_amdgcn_mmac<false>(bv0.data[1], av.data[1], acc[0]);
+          builtin_amdgcn_mmac<false>(bv1.data[0], av.data[0], acc[1]);
+          builtin_amdgcn_mmac<false>(bv1.data[1], av.data[1], acc[1]);
+        }
+      }
+    }
+  } else
+#endif
+  {
+    if (wave < 4) {
+      for (int base = wave * 32; base < hidden; base += 128) {
+        const int offset = base + col_group * 8;
+        half4x2 av = {};
+        if (valid_row)
+          av = *reinterpret_cast<const half4x2*>(x + ar * hidden + offset);
+  #pragma unroll
+        for (int tile = 0; tile < NT; ++tile) {
+          const int br = blockIdx.x * BN + tile * 16 + row;
+          half4x2 bv = {};
+          if (!PADDED || br < experts)
+            bv = *reinterpret_cast<const half4x2*>(w + br * hidden + offset);
+          // Swapping operands makes each fragment span four tokens, so the
+          // gate can load consecutive expert scores without a transpose pass.
+          builtin_amdgcn_mmac<false>(bv.data[0], av.data[0], acc[tile]);
+          builtin_amdgcn_mmac<false>(bv.data[1], av.data[1], acc[tile]);
+        }
       }
     }
   }
@@ -75,6 +119,10 @@ __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
       __syncthreads();
     }
     if (wave == 0) {
+if (round_logits_to_bf16) {
+#pragma unroll
+        for (int j = 0; j < 4; ++j) acc[tile][j] = float(BFloat16(acc[tile][j]));
+      }
       float scores[4];
       // Stage independent activations to overlap their instruction latency.
       float ex[4], sp[4];
@@ -116,9 +164,13 @@ __global__ __launch_bounds__(512) void bf16_mega_gate_kernel(
   (void)__hip_atomic_load(counters + blockIdx.y, __ATOMIC_ACQUIRE,
                           __HIP_MEMORY_SCOPE_AGENT);
   const int token = blockIdx.y * BM + threadIdx.x / 32;
-  moe_gate::topk_row<EXPERT_CAPACITY, TOP_K, PADDED>(
-      routes, bias, logits, mask, weights, ids, token, m, experts, renormalize,
-      scale, apply_scale);
+  // Keep unused consumer groups inside this token tile; all threads
+  // still participate in the final CTA barrier.
+  if (threadIdx.x / 32 < BM) {
+    moe_gate::topk_row<EXPERT_CAPACITY, TOP_K, PADDED>(
+        routes, bias, logits, mask, weights, ids, token, m, experts, renormalize,
+        scale, apply_scale, physical_map);
+  }
   // All consumers finish before the counter is reset. The next launch on this
   // stream starts after this entire kernel; concurrent users need distinct
   // workspace (including independent/concurrently replayed graphs).
@@ -134,26 +186,43 @@ template <int CAPACITY, int TOP_K>
 void launch_router(const Tensor& x, const Tensor& w, const Tensor& bias,
                    const Tensor& mask, Tensor logits, Tensor routes,
                    Tensor counters, Tensor weights, Tensor ids,
-                   bool renormalize, float scale, bool apply_scale) {
+                   bool renormalize, float scale, bool apply_scale, const Tensor& physical_map, bool round_logits_to_bf16) {
   const int m = x.size(0), experts = w.size(0), hidden = x.size(1);
-  const dim3 grid((experts + 31) / 32, (m + 15) / 16);
   const auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
-#define LAUNCH_ROUTER(H, PAD)                                               \
-  bf16_mega_gate_kernel<CAPACITY, TOP_K, H, PAD><<<grid, 512, 0, stream>>>( \
+#define LAUNCH_ROUTER(H, PAD, TM, TN, THREADS, MLS)                                               \
+  bf16_mega_gate_kernel<CAPACITY, TOP_K, H, PAD, TM, TN, THREADS, MLS> \
+      <<<dim3((experts + TN - 1) / TN, (m + TM - 1) / TM), THREADS, 0, stream>>>( \
       x.data_ptr<BFloat16>(), w.data_ptr<BFloat16>(),                       \
       bias.defined() ? bias.data_ptr<float>() : nullptr,                    \
       mask.defined() ? mask.data_ptr<bool>() : nullptr,                     \
       logits.data_ptr<float>(), routes.data_ptr<float>(),                   \
       counters.data_ptr<int>(), weights.data_ptr<float>(),                  \
-      ids.data_ptr<int64_t>(), m, experts, hidden, renormalize, scale,      \
-      apply_scale)
+      ids.data_ptr<int64_t>(), physical_map.defined() ? physical_map.data_ptr<int64_t>() : nullptr, m, experts, hidden, renormalize, scale,      \
+      apply_scale, round_logits_to_bf16)
   if constexpr (CAPACITY == 384 && TOP_K == 6) {
     if (experts == CAPACITY && hidden == 5120) {
-      LAUNCH_ROUTER(5120, false);
+      // Preserve reduction/scoring order. Restrict new scheduling to the
+      // measured gfx936 small-M shape; generic and larger launches stay intact.
+      const auto* props = at::cuda::getDeviceProperties(x.get_device());
+      const bool measured_device = props->multiProcessorCount == 80 &&
+          std::string(props->gcnArchName).rfind("gfx936", 0) == 0;
+      // MLS changes only input staging; BF16 rounding and physical mapping
+      // remain in the shared reduction/scoring/Top-K code below the GEMM.
+      if (m >= 128 && std::strncmp(props->gcnArchName, "gfx938", 6) == 0) {
+        LAUNCH_ROUTER(5120, false, 16, 32, 512, true);
+      } else if (round_logits_to_bf16 && measured_device && (m == 6 || m == 12)) {
+        LAUNCH_ROUTER(5120, false, 4, 16, 256, false);
+      } else if (round_logits_to_bf16 && measured_device && (m == 18 || m == 24)) {
+        LAUNCH_ROUTER(5120, false, 8, 16, 256, false);
+      } else if (round_logits_to_bf16 && measured_device && (m == 30 || m == 36 || m == 42 || m == 48)) {
+        LAUNCH_ROUTER(5120, false, 16, 16, 512, false);
+      } else {
+        LAUNCH_ROUTER(5120, false, 16, 32, 512, false);
+      }
       return;
     }
   }
-  LAUNCH_ROUTER(0, true);
+  LAUNCH_ROUTER(0, true, 16, 32, 512, false);
 #undef LAUNCH_ROUTER
 }
 
@@ -161,11 +230,11 @@ template <int CAPACITY>
 void dispatch_topk(const Tensor& x, const Tensor& w, const Tensor& bias,
                    const Tensor& mask, Tensor logits, Tensor routes,
                    Tensor counters, Tensor weights, Tensor ids, int topk,
-                   bool renormalize, float scale, bool apply_scale) {
+                   bool renormalize, float scale, bool apply_scale, const Tensor& physical_map, bool round_logits_to_bf16) {
 #define TOPK_CASE(K)                                                           \
   case K:                                                                      \
     launch_router<CAPACITY, K>(x, w, bias, mask, logits, routes, counters,     \
-                               weights, ids, renormalize, scale, apply_scale); \
+                               weights, ids, renormalize, scale, apply_scale, physical_map, round_logits_to_bf16); \
     break
   switch (topk) {
     TOPK_CASE(1);
@@ -275,7 +344,7 @@ void run_router_out(const Tensor& x, const Tensor& weight, const Tensor& bias,
                     const Tensor& mask, Tensor logits, Tensor routes,
                     Tensor counters, Tensor weights, Tensor ids, int64_t topk,
                     bool renormalize, double routed_scaling_factor,
-                    bool apply_scale) {
+                    bool apply_scale, const Tensor& physical_map, bool round_logits_to_bf16) {
   const int64_t m = x.size(0), experts = weight.size(0), blocks = (m + 15) / 16;
   check_tensor(logits, x, kFloat, "logits");
   check_tensor(routes, x, kFloat, "routes");
@@ -296,7 +365,7 @@ void run_router_out(const Tensor& x, const Tensor& weight, const Tensor& bias,
                 "FP32 inputs must be 32-byte aligned");
   const std::vector<Tensor> outputs{logits, routes, counters, weights, ids};
   for (size_t i = 0; i < outputs.size(); ++i) {
-    for (const auto& input : {x, weight, bias, mask})
+    for (const auto& input : {x, weight, bias, mask, physical_map})
       if (input.defined()) assert_no_overlap(outputs[i], input);
     for (size_t j = i + 1; j < outputs.size(); ++j)
       assert_no_overlap(outputs[i], outputs[j]);
@@ -306,7 +375,7 @@ void run_router_out(const Tensor& x, const Tensor& weight, const Tensor& bias,
   case CAPACITY:                                                             \
     dispatch_topk<CAPACITY>(x, weight, bias, mask, logits, routes, counters, \
                             weights, ids, topk, renormalize,                 \
-                            routed_scaling_factor, apply_scale);             \
+                            routed_scaling_factor, apply_scale, physical_map, round_logits_to_bf16);             \
     break
   switch ((experts + 127) / 128 * 128) {
     EXPERT_CASE(128);
@@ -324,9 +393,14 @@ std::vector<Tensor> bf16_mega_gate_hcu_impl(
     const torch::optional<Tensor>& optional_bias, int64_t topk,
     bool renormalize, double routed_scaling_factor, bool apply_scale,
     const torch::optional<std::vector<Tensor>>& out,
-    const torch::optional<Tensor>& optional_mask) {
+    const torch::optional<Tensor>& optional_mask, const torch::optional<Tensor>& optional_physical_map = c10::nullopt, bool round_logits_to_bf16 = false) {
   const Tensor bias = optional_bias.value_or(Tensor());
   const Tensor mask = optional_mask.value_or(Tensor());
+  const Tensor physical_map = optional_physical_map.value_or(Tensor());
+  if (physical_map.defined()) {
+    check_tensor(physical_map, x, kLong, "physical_map");
+    TORCH_CHECK(physical_map.dim()==1 && physical_map.numel()==weight.size(0), "physical_map must be INT64 [E]");
+  }
   check_router_inputs(x, weight, bias, mask, topk, routed_scaling_factor);
   const c10::cuda::CUDAGuard device_guard(x.device());
   const auto m = x.size(0), experts = weight.size(0);
@@ -344,9 +418,10 @@ std::vector<Tensor> bf16_mega_gate_hcu_impl(
   auto counters = m == 0 ? torch::empty({0}, x.options().dtype(kInt))
                          : get_stream_counters(x);
   run_router_out(x, weight, bias, mask, logits, routes, counters, weights, ids,
-                 topk, renormalize, routed_scaling_factor, apply_scale);
+                 topk, renormalize, routed_scaling_factor, apply_scale, physical_map, round_logits_to_bf16);
   return {weights, ids, logits};
 }
+
 
 std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
     const Tensor& x, const Tensor& weight, int64_t num_topk,

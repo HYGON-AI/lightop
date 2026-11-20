@@ -1,7 +1,10 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Numerical and captured-size tests for DPSKV4 LightOp gather/upconvert."""
+"""Numerical and captured-size tests for DPSKV4 LightOp gather/upconvert.
+
+    python3 -m pytest -q test/ci_tests/test_dsv4_gather_upconvert_k_cache.py
+"""
 
 import os
 
@@ -296,6 +299,231 @@ def test_dual_and_4d_view() -> None:
     )
 
 
+def _new_dedup_state(cache: torch.Tensor, page_size: int):
+    num_locations = cache.shape[0] * page_size
+    owner_map = torch.zeros(num_locations, dtype=torch.int64, device="cuda")
+    epoch = torch.zeros(2, dtype=torch.int64, device="cuda")
+    return owner_map, epoch
+
+
+def _expected_dedup_owner(
+    indices: torch.Tensor, lengths: torch.Tensor, num_locations: int
+) -> list[list[int]]:
+    """Smallest row of the call referencing each valid location; else self/0."""
+    queries, topk = indices.shape
+    first_row: dict[int, int] = {}
+    owners = []
+    for query in range(queries):
+        row_owners = []
+        for column in range(topk):
+            row = query * topk + column
+            if column >= int(lengths[query]):
+                row_owners.append(0)
+                continue
+            location = int(indices[query, column])
+            if 0 <= location < num_locations:
+                row_owners.append(first_row.setdefault(location, row))
+            else:
+                row_owners.append(row)
+        owners.append(row_owners)
+    return owners
+
+
+def _assert_dedup_result(
+    actual: torch.Tensor,
+    actual_compact: torch.Tensor,
+    indices: torch.Tensor,
+    lengths: torch.Tensor,
+    num_locations: int,
+    expected: torch.Tensor,
+    expected_compact: torch.Tensor,
+) -> None:
+    """Every row FlashMLA can read through compact must hold the right KV."""
+    torch.cuda.synchronize()
+    queries, topk = indices.shape
+    flat_actual = actual.view(queries * topk, -1).view(torch.int16)
+    flat_expected = expected.view(queries * topk, -1).view(torch.int16)
+    compact = actual_compact.view(queries, topk).cpu()
+    reference_compact = expected_compact.view(queries, topk).cpu()
+    owners = _expected_dedup_owner(indices.cpu(), lengths.cpu(), num_locations)
+    for query in range(queries):
+        for column in range(topk):
+            row = query * topk + column
+            owner = int(compact[query, column])
+            assert owner == owners[query][column], (query, column, owner)
+            if column >= int(lengths[query]):
+                continue
+            assert torch.equal(
+                flat_actual[owner],
+                flat_expected[int(reference_compact[query, column])],
+            ), (query, column, owner)
+    # Row 0 is the target of every out-of-prefix compact index: it must hold
+    # finite data even when it is not a valid KV row itself.
+    assert torch.isfinite(actual.view(queries * topk, -1)[0].float()).all()
+
+
+def _run_dedup_single(cache, indices, lengths, page_size, owner_map, epoch):
+    queries, topk = indices.shape
+    output = torch.full(
+        (queries, topk, 1, DIM_NOPE + DIM_ROPE),
+        float("nan"),
+        dtype=torch.bfloat16,
+        device="cuda",
+    )
+    compact = torch.full((queries, 1, topk), -7, dtype=torch.int32, device="cuda")
+    op.dsv4_gather_upconvert_dedup_k_cache_paged(
+        cache, indices, lengths, output, compact, page_size, owner_map, epoch
+    )
+    return output, compact
+
+
+def test_dedup_single_matches_reference() -> None:
+    page_size = 4
+    cache = _make_cache(3, page_size, seed=21)
+    num_locations = 3 * page_size
+    owner_map, epoch = _new_dedup_state(cache, page_size)
+    calls = (
+        (
+            [[5, 6, 7, 8, 9, -1], [6, 7, 8, 9, 10, 99], [7, 8, 9, 10, 11, 5], [0, 0, 3, 3, 5, 6]],
+            [6, 6, 5, 4],
+        ),
+        # Second call reuses the same tables: the bumped epoch must hide the
+        # previous call's claims.
+        (
+            [[11, 10, 9, 8, 0, 1], [1, 2, 3, 4, 11, 10], [2, 3, 4, 5, 6, 7], [7, 6, 5, 4, 3, 2]],
+            [6, 0, 6, 3],
+        ),
+    )
+    for call, (index_rows, length_values) in enumerate(calls):
+        indices = torch.tensor(index_rows, dtype=torch.int32, device="cuda")
+        lengths = torch.tensor(length_values, dtype=torch.int32, device="cuda")
+        output, compact = _run_dedup_single(
+            cache, indices, lengths, page_size, owner_map, epoch
+        )
+        expected, expected_compact = _reference(cache, indices, lengths, page_size)
+        _assert_dedup_result(
+            output, compact, indices, lengths, num_locations, expected, expected_compact
+        )
+        assert epoch.tolist() == [call + 1, call + 1]
+
+
+def test_dedup_dual_mtp_like() -> None:
+    """Two requests x four verify tokens with sliding SWA windows."""
+    swa_page_size = 8
+    extra_page_size = 2
+    swa_raw = _make_cache(4, swa_page_size, seed=31)
+    extra_raw = _make_cache(20, extra_page_size, seed=37)
+    swa_cache = torch.as_strided(
+        swa_raw,
+        size=(swa_raw.shape[0], swa_page_size, 1, TOKEN_DATA_BYTES + SCALE_BYTES),
+        stride=(swa_raw.stride(0), TOKEN_DATA_BYTES + SCALE_BYTES, TOKEN_DATA_BYTES + SCALE_BYTES, 1),
+    )
+    swa_window = 6
+    swa_rows, extra_rows = [], []
+    generator = torch.Generator().manual_seed(5)
+    for request, (swa_base, extra_base) in enumerate(((0, 0), (16, 20))):
+        extra_set = (torch.randperm(14, generator=generator)[:10] + extra_base).tolist()
+        for token in range(4):
+            swa_rows.append([swa_base + token + i for i in range(swa_window)])
+            # Neighbouring verify tokens share most of their top-k set.
+            row = list(extra_set)
+            row[token] = extra_base + 14 + request + token
+            extra_rows.append(row)
+    swa_indices = torch.tensor(swa_rows, dtype=torch.int32, device="cuda")
+    extra_indices = torch.tensor(extra_rows, dtype=torch.int32, device="cuda")
+    swa_lengths = torch.tensor([6, 6, 6, 5, 6, 6, 4, 6], dtype=torch.int32, device="cuda")
+    extra_lengths = torch.tensor([10, 9, 10, 10, 10, 10, 8, 10], dtype=torch.int32, device="cuda")
+    queries = swa_indices.shape[0]
+    swa_output = torch.empty((queries, swa_window, 1, 512), dtype=torch.bfloat16, device="cuda")
+    extra_output = torch.empty((queries, 10, 1, 512), dtype=torch.bfloat16, device="cuda")
+    swa_compact = torch.empty((queries, 1, swa_window), dtype=torch.int32, device="cuda")
+    extra_compact = torch.empty((queries, 1, 10), dtype=torch.int32, device="cuda")
+    swa_map, swa_epoch = _new_dedup_state(swa_raw, swa_page_size)
+    extra_map, extra_epoch = _new_dedup_state(extra_raw, extra_page_size)
+    for _ in range(3):
+        op.dsv4_gather_upconvert_dual_dedup_k_cache_paged(
+            swa_cache, swa_indices, swa_lengths, swa_output, swa_compact,
+            swa_page_size, swa_map, swa_epoch,
+            extra_raw, extra_indices, extra_lengths, extra_output, extra_compact,
+            extra_page_size, extra_map, extra_epoch,
+        )
+        swa_expected, swa_compact_expected = _reference(
+            swa_raw, swa_indices, swa_lengths, swa_page_size
+        )
+        extra_expected, extra_compact_expected = _reference(
+            extra_raw, extra_indices, extra_lengths, extra_page_size
+        )
+        _assert_dedup_result(
+            swa_output, swa_compact, swa_indices, swa_lengths,
+            4 * swa_page_size, swa_expected, swa_compact_expected,
+        )
+        _assert_dedup_result(
+            extra_output, extra_compact, extra_indices, extra_lengths,
+            20 * extra_page_size, extra_expected, extra_compact_expected,
+        )
+    unique_rows = len({int(v) for v in swa_compact.view(-1).tolist()})
+    assert unique_rows < swa_indices.numel() // 2
+
+
+def test_dedup_stale_owner_map_is_ignored() -> None:
+    """Entries left by earlier (or garbage later) epochs never leak into a call."""
+    page_size = 4
+    cache = _make_cache(3, page_size, seed=41)
+    owner_map, epoch = _new_dedup_state(cache, page_size)
+    epoch[0] = 6  # last completed call; this call runs as epoch 7
+    indices = torch.tensor(
+        [[4, 5, 6, 7], [5, 6, 7, 8], [9, 9, 2, 3]], dtype=torch.int32, device="cuda"
+    )
+    lengths = torch.tensor([4, 4, 3], dtype=torch.int32, device="cuda")
+    # Previous-epoch owners with smaller rows than any referencing row, and a
+    # bogus future-epoch entry: all must be overwritten by this call's claims.
+    owner_map[8] = (6 << 24) | 0
+    owner_map[9] = (6 << 24) | 1
+    owner_map[2] = (9 << 24) | 0
+    output, compact = _run_dedup_single(
+        cache, indices, lengths, page_size, owner_map, epoch
+    )
+    expected, expected_compact = _reference(cache, indices, lengths, page_size)
+    _assert_dedup_result(
+        output, compact, indices, lengths, 12, expected, expected_compact
+    )
+    assert epoch.tolist() == [7, 7]
+
+
+def test_dedup_cuda_graph_replay() -> None:
+    page_size = 4
+    cache = _make_cache(4, page_size, seed=51)
+    owner_map, epoch = _new_dedup_state(cache, page_size)
+    indices = torch.zeros((4, 5), dtype=torch.int32, device="cuda")
+    lengths = torch.full((4,), 5, dtype=torch.int32, device="cuda")
+    output = torch.empty((4, 5, 1, 512), dtype=torch.bfloat16, device="cuda")
+    compact = torch.empty((4, 1, 5), dtype=torch.int32, device="cuda")
+
+    def run():
+        op.dsv4_gather_upconvert_dedup_k_cache_paged(
+            cache, indices, lengths, output, compact, page_size, owner_map, epoch
+        )
+
+    stream = torch.cuda.Stream()
+    stream.wait_stream(torch.cuda.current_stream())
+    with torch.cuda.stream(stream):
+        run()
+    torch.cuda.current_stream().wait_stream(stream)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        run()
+    generator = torch.Generator().manual_seed(9)
+    for _ in range(4):
+        base = torch.randint(0, 10, (4, 1), generator=generator)
+        indices.copy_((base + torch.arange(5).view(1, 5)).to(torch.int32))
+        lengths.copy_(torch.randint(1, 6, (4,), generator=generator).to(torch.int32))
+        graph.replay()
+        expected, expected_compact = _reference(cache, indices, lengths, page_size)
+        _assert_dedup_result(
+            output, compact, indices, lengths, 16, expected, expected_compact
+        )
+
+
 def _validate_captured_single_case(case: dict) -> None:
     assert case["op"] == "single"
     assert case["cache_shape"] == (
@@ -463,4 +691,62 @@ def test_decode_d_captured_sizes_smoke() -> None:
 if __name__ == "__main__":
     test_single()
     test_dual_and_4d_view()
+    test_dedup_single_matches_reference()
+    test_dedup_dual_mtp_like()
+    test_dedup_stale_owner_map_is_ignored()
+    test_dedup_cuda_graph_replay()
     print("DSV4_LIGHTOP_GATHER_CORRECT=True")
+
+
+@pytest.mark.parametrize("group", [1, 5, 6])
+@pytest.mark.parametrize("extra_page", [2, 64, 128, 256])
+def test_compact_query_reuse_matches_independent_gather(group, extra_page):
+    from lightop.kvcache import dsv4_gather_upconvert_compact_k_cache_paged
+
+    q, ak, bk = group * 2, 8, 4
+    a = _make_cache(1, 256, seed=31)
+    b = _make_cache(1, extra_page, seed=37)
+    def packed(raw, page):
+        return torch.as_strided(raw, (1, page, 1, 584),
+                                (raw.stride(0), 584, 584, 1))
+    ai = torch.arange(ak, device="cuda", dtype=torch.int32).repeat(q, 1)
+    bi = torch.arange(bk, device="cuda", dtype=torch.int32).repeat(q, 1)
+    if group == 6:
+        for i in range(q):
+            ai[i] = ai[i].roll(-(i % group))
+    # Equal indices exercise sharing; mismatches must gather independently.
+    ai[-1, 0] = 17
+    ai[-1, 1] = -1
+    bi[-1, 0] = extra_page + 1
+    al = torch.full((q,), ak, device="cuda", dtype=torch.int32)
+    bl = torch.full((q,), bk, device="cuda", dtype=torch.int32)
+    al[-1], bl[-1] = ak - 2, bk - 1
+    av, _ = _reference(a, ai, al, 256)
+    bv, _ = _reference(b, bi, bl, extra_page)
+    out = torch.full((q, ak + bk, 1, 512), float("nan"), device="cuda", dtype=torch.bfloat16)
+    ids = torch.full((q, 1, ak + bk), -1, device="cuda", dtype=torch.int32)
+    dsv4_gather_upconvert_compact_k_cache_paged(
+        packed(a, 256), ai, al, packed(b, extra_page), bi, bl,
+        out, ids, extra_page, reuse_group=group,
+    )
+    for row in range(q):
+        n, m = int(al[row]), int(bl[row])
+        expected = torch.cat((av[row, :n], bv[row, :m]))
+        selected = out.view(-1, 1, 512)[ids[row, 0, :n + m].long()]
+        torch.testing.assert_close(selected, expected, rtol=0, atol=0)
+        assert (ids[row, 0, n + m:] == 0).all()
+
+
+def test_query_reuse_rejects_too_few_swa_columns():
+    from lightop.kvcache import dsv4_gather_upconvert_compact_k_cache_paged
+
+    cache = torch.zeros((1, 256, 1, 584), device="cuda", dtype=torch.uint8)
+    indices = torch.zeros((6, 1), device="cuda", dtype=torch.int32)
+    lengths = torch.ones(6, device="cuda", dtype=torch.int32)
+    out = torch.empty((6, 1, 1, 512), device="cuda", dtype=torch.bfloat16)
+    compact = torch.empty((6, 1, 1), device="cuda", dtype=torch.int32)
+    with pytest.raises(RuntimeError, match="at least five SWA columns"):
+        dsv4_gather_upconvert_compact_k_cache_paged(
+            cache, indices, lengths, cache, indices[:, :0], lengths * 0,
+            out, compact, 256, reuse_group=6,
+        )

@@ -80,6 +80,21 @@ def _validate_clamp_quant_smooth_scale(
     if not smooth_scale.is_contiguous():
         raise ValueError("smooth_scale must be contiguous")
 
+
+def is_silu_clamp_product_rounding_available() -> bool:
+    """Whether the installed native operator supports rounding only the product."""
+    return getattr(op, "SILU_CLAMP_QUANT_ROUNDING_VERSION", 0) >= 2
+
+
+def _run_clamp_quant(operation, args, *, round_silu):
+    if round_silu:
+        # Omit the new argument so existing native packages retain their ABI.
+        return operation(*args)
+    if not is_silu_clamp_product_rounding_available():
+        raise RuntimeError("native clamp quantization lacks product-only rounding")
+    return operation(*args, round_silu=False)
+
+
 def fuse_silu_mul_clamp_quant(
     input: torch.Tensor,
     limit: float,
@@ -90,6 +105,7 @@ def fuse_silu_mul_clamp_quant(
     use_gelu: bool = False,
     smooth_scale: Optional[torch.Tensor] = None,
     num_local_tokens_tensor: Optional[torch.Tensor] = None,
+    round_silu: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Fused clamp + SiLU/GELU + mul + per-token INT8 quant.
 
@@ -97,7 +113,8 @@ def fuse_silu_mul_clamp_quant(
     GELU -> multiply -> clamp -> optional smooth -> INT8 quant. The default
     SiLU path keeps the original ordering: clamp gate/up -> SiLU -> multiply
     -> optional smooth -> INT8 quant. Smooth scaling is rounded in the input
-    dtype before dynamic quantization.
+    dtype before dynamic quantization. With round_silu=False, keep SiLU in
+    FP32 through multiplication and round the product once to the input dtype.
 
     When ``mask_m`` is provided or ``expect_m != -1``, ``input`` uses the EP
     layout ``[experts, tokens, 2 * hidden]`` and ``mask_m[e]`` gives the valid
@@ -121,6 +138,7 @@ def fuse_silu_mul_clamp_quant(
             scales,
             use_gelu=use_gelu,
             smooth_scale=smooth_scale,
+            round_silu=round_silu,
         )
 
     if input.dim() != 2 or input.shape[-1] % 2 != 0:
@@ -144,15 +162,19 @@ def fuse_silu_mul_clamp_quant(
         scales = torch.empty(
             (*leading_shape, 1), dtype=torch.float32, device=input.device
         )
-    op.fuse_silu_mul_clamp_quant(
-        input,
-        output,
-        scales,
-        float(limit),
-        use_gelu,
-        smooth_scale,
-        num_local_tokens_tensor,
-        int(expect_m),
+    _run_clamp_quant(
+        op.fuse_silu_mul_clamp_quant,
+        (
+            input,
+            output,
+            scales,
+            float(limit),
+            use_gelu,
+            smooth_scale,
+            num_local_tokens_tensor,
+            int(expect_m),
+        ),
+        round_silu=round_silu,
     )
     return output, scales
 
@@ -166,6 +188,7 @@ def fuse_silu_mul_clamp_quant_ep(
     scales: Optional[torch.Tensor] = None,
     use_gelu: bool = False,
     smooth_scale: Optional[torch.Tensor] = None,
+    round_silu: bool = True,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Run masked EP clamp + activation + optional smooth + INT8 quant."""
     if input.dim() != 3 or input.shape[-1] % 2 != 0:
@@ -192,15 +215,19 @@ def fuse_silu_mul_clamp_quant_ep(
             dtype=torch.float32,
             device=input.device,
         )
-    op.fuse_silu_mul_clamp_quant_ep(
-        input,
-        output,
-        scales,
-        float(limit),
-        mask_m,
-        expect_m,
-        use_gelu,
-        smooth_scale,
+    _run_clamp_quant(
+        op.fuse_silu_mul_clamp_quant_ep,
+        (
+            input,
+            output,
+            scales,
+            float(limit),
+            mask_m,
+            expect_m,
+            use_gelu,
+            smooth_scale,
+        ),
+        round_silu=round_silu,
     )
     return output, scales
 
@@ -232,13 +259,17 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                         output: Optional[torch.Tensor] = None,
                         scales: Optional[torch.Tensor] = None,
                         expert_ids: Optional[torch.Tensor] = None,
-                        limit: Optional[float] = -1.0) -> tuple[torch.Tensor, torch.Tensor]:
+                        limit: Optional[float] = -1.0,
+                        per_token_scale: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """Run SwiGLU followed by per-token FP8 quantization.
 
     A positive ``limit`` applies the DeepSeek V4 clamp in the input dtype
     before activation: ``gate <= limit`` and ``-limit <= up <= limit``.
     The default ``-1.0`` disables the clamp. ``None`` remains accepted for
     backward compatibility and also disables the clamp.
+    ``per_token_scale=True`` matches separate BF16 SiLU-and-mul followed by
+    per-token E4M3 quantization, including zero/tiny rows without a scale floor.
+    It supports unmasked, no-limit BF16 input of shape ``[M, 4096]``.
     """
     normalized_limit = _normalize_fp8_limit(limit)
 
@@ -255,6 +286,7 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
                             device=input.device,
                             dtype=torch.float32)
 
+    kernel_options = {"per_token_scale": True} if per_token_scale else {}
     op.fuse_silu_mul_fp8_quant(
         input,
         output.view(torch.uint8),
@@ -265,6 +297,7 @@ def fuse_silu_mul_fp8_quant(input: torch.Tensor,
         expect_m,
         expert_ids,
         normalized_limit,
+        **kernel_options,
     )
     return output, scales
 

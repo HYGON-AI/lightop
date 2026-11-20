@@ -50,7 +50,7 @@ static inline __device__ int8_t swiglu_clamp_float_to_int8_rn(float x) {
 #endif
 }
 
-template <typename scalar_t, bool use_gelu>
+template <typename scalar_t, bool use_gelu, bool round_silu>
 __device__ __forceinline__ scalar_t swiglu_clamp_value(
     scalar_t gate, scalar_t up, float limit) {
   float gate_f = static_cast<float>(gate);
@@ -70,7 +70,7 @@ __device__ __forceinline__ scalar_t swiglu_clamp_value(
     value = value < -limit ? -limit : (value > limit ? limit : value);
     return static_cast<scalar_t>(value);
   }
-  // clamp(BF16) -> SiLU(BF16) -> multiply(BF16) -> dynamic INT8 quant.
+  // Preserve either a materialized SiLU or a single SiLU/multiply output rounding.
   gate_f = gate_f > limit ? limit : gate_f;
   up_f = up_f < -limit ? -limit : (up_f > limit ? limit : up_f);
   const scalar_t gate_clamped = static_cast<scalar_t>(gate_f);
@@ -82,9 +82,14 @@ __device__ __forceinline__ scalar_t swiglu_clamp_value(
 #else
   const float exp_value = __expf(-static_cast<float>(gate_clamped));
 #endif
-  const scalar_t activated = static_cast<scalar_t>(
-      static_cast<float>(gate_clamped) / (1.0f + exp_value));
-  return static_cast<scalar_t>(activated * up_clamped);
+  const float activated_fp32 =
+      static_cast<float>(gate_clamped) / (1.0f + exp_value);
+  if constexpr (round_silu) {
+    const scalar_t activated = static_cast<scalar_t>(activated_fp32);
+    return static_cast<scalar_t>(activated * up_clamped);
+  } else {
+    return static_cast<scalar_t>(activated_fp32 * static_cast<float>(up_clamped));
+  }
 }
 
 template <typename scalar_t, bool apply_smooth>
@@ -103,7 +108,8 @@ template <typename scalar_t,
           int block_size,
           bool ep,
           bool use_gelu,
-          bool apply_smooth>
+          bool apply_smooth,
+          bool round_silu>
 __global__ void swiglu_clamp_quant_kernel(
     const scalar_t* __restrict__ input,
     const float* __restrict__ smooth_scale,
@@ -158,7 +164,7 @@ __global__ void swiglu_clamp_quant_kernel(
 #pragma unroll
       for (int i = 0; i < vec; ++i) {
         activated[i] = swiglu_apply_smooth<scalar_t, apply_smooth>(
-            swiglu_clamp_value<scalar_t, use_gelu>(
+            swiglu_clamp_value<scalar_t, use_gelu, round_silu>(
                 gate_values[i], up_values[i], limit),
             smooth_scale,
             idx + i);
@@ -200,7 +206,8 @@ template <typename scalar_t,
           int block_size,
           bool ep,
           bool use_gelu,
-          bool apply_smooth>
+          bool apply_smooth,
+          bool round_silu>
 __global__ void swiglu_clamp_quant_scalar_kernel(
     const scalar_t* __restrict__ input,
     const float* __restrict__ smooth_scale,
@@ -241,7 +248,7 @@ __global__ void swiglu_clamp_quant_scalar_kernel(
     float row_max = 0.0f;
     for (int idx = threadIdx.x; idx < d; idx += blockDim.x) {
       const scalar_t value = swiglu_apply_smooth<scalar_t, apply_smooth>(
-          swiglu_clamp_value<scalar_t, use_gelu>(
+          swiglu_clamp_value<scalar_t, use_gelu, round_silu>(
               LIGHTOP_LDG(input + input_offset + idx),
               LIGHTOP_LDG(input + input_offset + d + idx),
               limit),
@@ -261,7 +268,7 @@ __global__ void swiglu_clamp_quant_scalar_kernel(
     const float inv_scale = 127.0f / row_absmax;
     for (int idx = threadIdx.x; idx < d; idx += blockDim.x) {
       const scalar_t value = swiglu_apply_smooth<scalar_t, apply_smooth>(
-          swiglu_clamp_value<scalar_t, use_gelu>(
+          swiglu_clamp_value<scalar_t, use_gelu, round_silu>(
               LIGHTOP_LDG(input + input_offset + idx),
               LIGHTOP_LDG(input + input_offset + d + idx),
               limit),
@@ -379,7 +386,7 @@ static bool prepare_gelu_bf16_table(cudaStream_t stream) {
 }
 #endif
 
-template <typename scalar_t, bool ep, bool use_gelu, bool apply_smooth>
+template <typename scalar_t, bool ep, bool use_gelu, bool apply_smooth, bool round_silu>
 void launch_swiglu_clamp_quant(
     const torch::Tensor& input,
     const float* smooth_scale,
@@ -407,7 +414,7 @@ void launch_swiglu_clamp_quant(
   }
 #endif
   if (d <= 512 && d % 2 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 2, 256, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 2, 256, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 256, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -418,7 +425,7 @@ void launch_swiglu_clamp_quant(
             tokens_per_expert,
             mask_m);
   } else if (d <= 1024 && d % 8 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 8, 128, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 8, 128, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 128, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -429,7 +436,7 @@ void launch_swiglu_clamp_quant(
             tokens_per_expert,
             mask_m);
   } else if (d <= 2048 && d % 8 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 8, 256, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 8, 256, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 256, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -440,7 +447,7 @@ void launch_swiglu_clamp_quant(
             tokens_per_expert,
             mask_m);
   } else if (d <= 4096 && d % 8 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 8, 512, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 8, 512, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 512, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -451,7 +458,7 @@ void launch_swiglu_clamp_quant(
             tokens_per_expert,
             mask_m);
   } else if (d <= 8192 && d % 8 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 8, 1024, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 8, 1024, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 1024, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -462,7 +469,7 @@ void launch_swiglu_clamp_quant(
             tokens_per_expert,
             mask_m);
   } else if (d <= 16384 && d % 16 == 0) {
-    swiglu_clamp_quant_kernel<scalar_t, 16, 1024, ep, use_gelu, apply_smooth>
+    swiglu_clamp_quant_kernel<scalar_t, 16, 1024, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 1024, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -474,7 +481,7 @@ void launch_swiglu_clamp_quant(
             mask_m);
   } else {
     swiglu_clamp_quant_scalar_kernel<
-        scalar_t, 1024, ep, use_gelu, apply_smooth>
+        scalar_t, 1024, ep, use_gelu, apply_smooth, round_silu>
         <<<grid, 1024, 0, stream>>>(
             input.data_ptr<scalar_t>(),
             smooth_scale,
@@ -487,6 +494,7 @@ void launch_swiglu_clamp_quant(
   }
 }
 
+template <bool round_silu>
 static void fuse_silu_mul_clamp_quant_impl(
     torch::Tensor& input,
     torch::Tensor& output,
@@ -627,7 +635,7 @@ static void fuse_silu_mul_clamp_quant_impl(
   LIGHTOP_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "fuse_silu_mul_clamp_quant", [&] {
         if (use_ep && use_gelu && smooth_scale_ptr != nullptr) {
-          launch_swiglu_clamp_quant<scalar_t, true, true, true>(
+          launch_swiglu_clamp_quant<scalar_t, true, true, true, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -639,7 +647,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (use_ep && use_gelu) {
-          launch_swiglu_clamp_quant<scalar_t, true, true, false>(
+          launch_swiglu_clamp_quant<scalar_t, true, true, false, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -651,7 +659,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (use_ep && smooth_scale_ptr != nullptr) {
-          launch_swiglu_clamp_quant<scalar_t, true, false, true>(
+          launch_swiglu_clamp_quant<scalar_t, true, false, true, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -663,7 +671,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (use_ep) {
-          launch_swiglu_clamp_quant<scalar_t, true, false, false>(
+          launch_swiglu_clamp_quant<scalar_t, true, false, false, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -675,7 +683,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (use_gelu && smooth_scale_ptr != nullptr) {
-          launch_swiglu_clamp_quant<scalar_t, false, true, true>(
+          launch_swiglu_clamp_quant<scalar_t, false, true, true, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -687,7 +695,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (use_gelu) {
-          launch_swiglu_clamp_quant<scalar_t, false, true, false>(
+          launch_swiglu_clamp_quant<scalar_t, false, true, false, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -699,7 +707,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else if (smooth_scale_ptr != nullptr) {
-          launch_swiglu_clamp_quant<scalar_t, false, false, true>(
+          launch_swiglu_clamp_quant<scalar_t, false, false, true, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -711,7 +719,7 @@ static void fuse_silu_mul_clamp_quant_impl(
               grid,
               stream);
         } else {
-          launch_swiglu_clamp_quant<scalar_t, false, false, false>(
+          launch_swiglu_clamp_quant<scalar_t, false, false, false, round_silu>(
               input,
               smooth_scale_ptr,
               output,
@@ -733,12 +741,18 @@ void fuse_silu_mul_clamp_quant(torch::Tensor& input,
                                bool use_gelu,
                                const c10::optional<torch::Tensor>& smooth_scale,
                                const c10::optional<torch::Tensor>& num_local_tokens_tensor,
-                               int expect_m) {
+                               int expect_m,
+                               bool round_silu) {
   const torch::Tensor* mask = num_local_tokens_tensor.has_value()
                                   ? &num_local_tokens_tensor.value()
                                   : nullptr;
-  fuse_silu_mul_clamp_quant_impl(
-      input, output, scales, limit, mask, expect_m, false, use_gelu, smooth_scale);
+  if (round_silu) {
+    fuse_silu_mul_clamp_quant_impl<true>(
+        input, output, scales, limit, mask, expect_m, false, use_gelu, smooth_scale);
+  } else {
+    fuse_silu_mul_clamp_quant_impl<false>(
+        input, output, scales, limit, mask, expect_m, false, use_gelu, smooth_scale);
+  }
 }
 
 void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input,
@@ -748,17 +762,15 @@ void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input,
                                   const torch::Tensor& mask_m,
                                   int expect_m,
                                   bool use_gelu,
-                                  const c10::optional<torch::Tensor>& smooth_scale) {
-  fuse_silu_mul_clamp_quant_impl(
-      input,
-      output,
-      scales,
-      limit,
-      &mask_m,
-      expect_m,
-      true,
-      use_gelu,
-      smooth_scale);
+                                  const c10::optional<torch::Tensor>& smooth_scale,
+                                  bool round_silu) {
+  if (round_silu) {
+    fuse_silu_mul_clamp_quant_impl<true>(
+        input, output, scales, limit, &mask_m, expect_m, true, use_gelu, smooth_scale);
+  } else {
+    fuse_silu_mul_clamp_quant_impl<false>(
+        input, output, scales, limit, &mask_m, expect_m, true, use_gelu, smooth_scale);
+  }
 }
 
 }  // namespace native

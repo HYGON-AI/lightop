@@ -303,6 +303,7 @@ def test_public_signature():
         "return_logits",
         "renormalize",
         "apply_scale",
+        "logits_dtype",
     ]
     for name in list(parameters)[:7]:
         assert parameters[name].default is inspect.Parameter.empty
@@ -310,7 +311,7 @@ def test_public_signature():
     for name in list(parameters)[8:18]:
         assert parameters[name].default is None
     for name, default in (
-        ("return_logits", False), ("renormalize", True), ("apply_scale", True)
+        ("return_logits", False), ("renormalize", True), ("apply_scale", True), ("logits_dtype", None)
     ):
         assert parameters[name].kind is inspect.Parameter.KEYWORD_ONLY
         assert parameters[name].default is default
@@ -541,3 +542,30 @@ with torch.cuda.stream(stream):
         [sys.executable, "-c", script], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("m", [6, 12, 18, 24, 30, 36, 42, 48])
+def test_bf16_logits_with_static_physical_map(m):
+    x, w, bias = inputs(m)
+    mask = torch.arange(m, device=x.device) < m - 1
+    mapping = torch.randperm(w.shape[0], device=x.device)
+    logits = gemm_ops.gemm(x, w, out_dtype=torch.float32).bfloat16().float()
+    ids, weights = torch_gate_reference(logits, bias, 6, mask=mask)
+    expected_ids = torch.where(mask[:, None], mapping[ids.clamp_min(0)], -1)
+    actual_ids, actual_weights, actual_logits = bf16_mega_gate_hcu(
+        x, w, 6, False, 0, 1.0, 0, bias=bias, mask=mask,
+        to_physical_map=mapping, return_logits=True, logits_dtype=torch.bfloat16,
+    )
+    assert_result((actual_ids, actual_weights), (expected_ids, weights))
+    torch.testing.assert_close(actual_logits, logits, rtol=0, atol=0)
+
+
+def test_bf16_physical_map_cannot_alias_output():
+    x, w, bias = inputs(1, experts=4)
+    mapping = torch.arange(4, device=x.device, dtype=torch.int64)
+    out = (mapping.view(1, 4), torch.empty(1, 4, device=x.device))
+    with pytest.raises(RuntimeError):
+        bf16_mega_gate_hcu(
+            x, w, 4, False, 0, 1.0, 0, bias=bias,
+            to_physical_map=mapping, out=out, logits_dtype=torch.bfloat16,
+        )

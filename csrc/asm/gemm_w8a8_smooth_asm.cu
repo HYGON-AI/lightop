@@ -61,7 +61,7 @@ void _gemm_w8a8_smooth_256x256x128_TN_impl(
     OutputType *bias_data,
     OutputType *D_data,
     const int &size_m, const int &size_n, const int &size_k,
-    bool isBfloat16 = false)
+    bool isBfloat16 = false, bool input_scale_first = false)
 {
 
 
@@ -192,9 +192,19 @@ void _gemm_w8a8_smooth_256x256x128_TN_impl(
 	static AiterAsmKernel gemm_w8a8_smooth_fp16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_WGM8_TN_FP16.co");
 	static AiterAsmKernel gemm_w8a8_smooth_bf16("Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant", "gemm_w8a8_smooth_256x256x128_WGM8_TN_BF16.co");
 	
-	AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
-    if (isBfloat16) 
-        impl_ptr = &gemm_w8a8_smooth_bf16;
+    AiterAsmKernel *impl_ptr = &gemm_w8a8_smooth_fp16;
+    if (isBfloat16) {
+        if (input_scale_first) {
+            // The ordered-scale object differs only in FP32 MUL operands.
+            // Load lazily so legacy calls and other gfx targets need no new CO.
+            static AiterAsmKernel ordered(
+                "Cijk_Alik_Bljk_I8II_BH_MT256x256x128_TT16x8_WG16x32x2_Squant",
+                "gemm_w8a8_smooth_256x256x128_WGM8_TN_BF16_INPUT_SCALE_FIRST.co");
+            impl_ptr = &ordered;
+        } else {
+            impl_ptr = &gemm_w8a8_smooth_bf16;
+        }
+    }
 
 	impl_ptr->launch_kernel({&params,
                              &paramsSize,
@@ -217,7 +227,8 @@ torch::Tensor gemm_w8a8_smooth_256x256x128_TN_dispatch(torch::Tensor &A,
                                               const int &M, const int &N,
                                               const int &K,
                                               c10::optional<torch::Tensor> bias,
-                                              torch::Dtype output_dtype)
+                                              torch::Dtype output_dtype,
+                                              bool input_scale_first = false)
 {
 
     torch::TensorOptions options = torch::TensorOptions()
@@ -240,7 +251,7 @@ torch::Tensor gemm_w8a8_smooth_256x256x128_TN_dispatch(torch::Tensor &A,
                                                As.data_ptr<float>(),
 											nullptr,
 											reinterpret_cast<bhalf_t *>(D.data_ptr()),
-											N, M, K, 1);
+											N, M, K, 1, input_scale_first);
 
     else
         TORCH_CHECK(false, "gemm_w8a8_smooth only supports outputType in [Float16, BFloat16]");
@@ -2285,8 +2296,37 @@ torch::Tensor gemm_w8a8_smooth_asm(torch::Tensor &A,
 									c10::optional<torch::Tensor> bias,
 									torch::Dtype output_dtype,
 									int M, int N, int K,
-									bool isTunning_slide_block, int tunning_slide_block)
+									bool isTunning_slide_block, int tunning_slide_block,
+                                    bool input_scale_first)
 {
+    if (input_scale_first) {
+        TORCH_CHECK(A.is_cuda() && B.is_cuda() && As.is_cuda() && Bs.is_cuda(),
+                    "input_scale_first requires HCU tensors");
+        TORCH_CHECK(A.device() == B.device() && A.device() == As.device()
+                        && A.device() == Bs.device(), "all tensors must share a device");
+        TORCH_CHECK(output_dtype == torch::kBFloat16 && !bias.has_value(),
+                    "input_scale_first requires BF16 output and no bias");
+        TORCH_CHECK(A.scalar_type() == torch::kInt8 && B.scalar_type() == torch::kInt8
+                        && As.scalar_type() == torch::kFloat32 && Bs.scalar_type() == torch::kFloat32,
+                    "input_scale_first requires INT8 matrices and FP32 scales");
+        TORCH_CHECK(M > 16 && N > 0 && N % 256 == 0 && K > 0 && K % 128 == 0,
+                    "input_scale_first requires M>16, N%256==0, K%128==0");
+        TORCH_CHECK(A.dim() == 2 && A.size(0) == M && A.size(1) == K && A.is_contiguous()
+                        && B.dim() == 2 && B.size(0) == K && B.size(1) == N
+                        && B.stride(0) == 1 && B.stride(1) == K,
+                    "input_scale_first requires row-major A and transposed contiguous B");
+        TORCH_CHECK(As.dim() == 2 && As.size(0) == M && As.size(1) == 1 && As.is_contiguous()
+                        && Bs.dim() == 2 && Bs.size(0) == N && Bs.size(1) == 1 && Bs.is_contiguous(),
+                    "input_scale_first requires scales [M,1] and [N,1]");
+        const at::cuda::OptionalCUDAGuard device_guard(device_of(A));
+        hipDeviceProp_t properties{};
+        TORCH_CHECK(hipGetDeviceProperties(&properties, A.get_device()) == hipSuccess,
+                    "cannot query HCU properties");
+        TORCH_CHECK(std::string(properties.gcnArchName).find("gfx936") == 0,
+                    "input_scale_first is supported only on gfx936");
+        return gemm_w8a8_smooth_256x256x128_TN_dispatch(
+            A, B, As, Bs, M, N, K, bias, output_dtype, true);
+    }
     return gemm_w8a8_smooth_asm_bridg(A, B, As, Bs, bias, output_dtype,
 												  M, N, K, isTunning_slide_block, tunning_slide_block);
 }

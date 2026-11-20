@@ -421,7 +421,7 @@ Tensor moe_gemm_w4a8(torch::Tensor input,Tensor b_qweight,Tensor output,Tensor a
 Tensor moe_gemm_w16a16(torch::Tensor input,Tensor b_qweight,Tensor output,std::optional<Tensor> topk_weights,Tensor sorted_token_ids,Tensor expert_ids,Tensor num_tokens_post_pad, int64_t top_k, int mode, int delta);
 Tensor gemm_w8_a8_smooth_colmajor(const Tensor& x,const Tensor& y,const Tensor& scale_a,const Tensor& scale_b,  const std::optional<Tensor> bias, at::ScalarType out_dtype,int warps,int n_per_block, int n_per_warp, int splitk, bool use_n_warps);
 
-Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const std::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K, bool isTunning_slide_block, int tunning_slide_block);
+Tensor gemm_w8a8_smooth_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, const std::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K, bool isTunning_slide_block, int tunning_slide_block, bool input_scale_first);
 Tensor gemm_w8a8_asm(Tensor &A, Tensor &B, Tensor &As, Tensor &Bs, c10::optional<Tensor> &C, c10::optional<Tensor> &D_, c10::optional<Tensor> bias, torch::Dtype output_dtype, int M, int N, int K, int gradType = 0);
 
 std::vector<torch::Tensor> grougemm_w8a8_pertensor_asm(std::vector<torch::Tensor>& A_list, std::vector<torch::Tensor>& B_list, std::vector<torch::Tensor>& D_list, std::vector<torch::Tensor>& As_list, std::vector<torch::Tensor>& Bs_list, 
@@ -533,7 +533,7 @@ void rms_norm_dynamic_per_token_quant(Tensor &output,Tensor& input,const Tensor&
 void rms_norm_dynamic_per_token_quant_sglang(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input,double limit,std::optional<Tensor> smooth_scale,std::optional<Tensor> norm_output,bool clamp_norm_output,std::optional<Tensor> residual_output,std::optional<Tensor> clamped_output);
 void mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang(Tensor& q_out,Tensor& packed_input,const Tensor& q_weight,const Tensor& kv_weight,
                                                        Tensor q_scales,double q_epsilon,double kv_epsilon);
-void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type);
+void rms_norm_fp8_quant(Tensor &output,Tensor& input,const Tensor& weight,Tensor scales,double epsilon,std::optional<Tensor> residual,bool update_input, int fp8type, std::optional<Tensor> norm_output);
 void create_gemmbias_handle();
 void destroy_gemmbias_handle();
 void create_gemmdbias_handle();
@@ -567,12 +567,12 @@ std::vector<Tensor> moe_fused_gate(torch::Tensor& input, torch::Tensor& bias, in
 std::vector<Tensor> moe_fuse_gate_per_gourp_topk(torch::Tensor& input, torch::Tensor& bias, int64_t num_expert_group, int64_t topk_per_group, int64_t num_pad_experts, int64_t num_shared_experts, double routed_scaling_factor, bool apply_routed_scaling_factor_on_output);
 
 void fuse_silu_mul_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids) ;
-void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, const c10::optional<torch::Tensor>& num_local_tokens_tensor = c10::nullopt, int expect_m = -1);
-void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale);
+void fuse_silu_mul_clamp_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, const c10::optional<torch::Tensor>& num_local_tokens_tensor = c10::nullopt, int expect_m = -1, bool round_silu = true);
+void fuse_silu_mul_clamp_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, double limit, const torch::Tensor& mask_m, int expect_m, bool use_gelu, const c10::optional<torch::Tensor>& smooth_scale, bool round_silu);
 void fuse_silu_mul_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m);
 void fuse_situ_mul_quant_contiguous(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, double situ_beta, double situ_linear_beta);
 void fuse_situ_mul_quant_ep(torch::Tensor& input, torch::Tensor& out, torch::Tensor& scales, torch::Tensor& masked_m, double situ_beta, double situ_linear_beta, int64_t expect_m);
-void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f) ;
+void fuse_silu_mul_fp8_quant(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &num_local_tokens_tensor, int topK, int expert_m, torch::optional<torch::Tensor> &expert_ids, float limit = -1.0f, bool per_token_scale = false);
 void swiglu_oai_fp8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void swiglu_oai_fp8_quant_masked_flat(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, int64_t, int64_t);
 void fuse_silu_mul_fp8_quant_ep(torch::Tensor& input, torch::Tensor& output, torch::Tensor& scales, const int fp8type, torch::optional<torch::Tensor> &tokens_per_expert, torch::optional<torch::Tensor> &num_local_tokens_tensor,int topK,int expert_m, float limit);
@@ -614,7 +614,7 @@ void destindex_copy_quantize_int8_cuda(const torch::Tensor& input, torch::Tensor
 void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Tensor& scale_zero, torch::Tensor& output);
 std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 void fuse_rms_mrope_cuda(Tensor &q, Tensor &k, const Tensor &cos, const Tensor &sin, const std::vector<int>& mrope_section, int head_size, int rotary_dim,bool is_interleaved,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
-void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output);
+void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output,bool specialize_k8 = false);
 torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
 std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
@@ -632,6 +632,14 @@ void ep_fused_smooth_quant_scatter(
     int local_num_experts, int alignment); 
 void per_token_dynamic_quant_int8(torch::Tensor& out, torch::Tensor const& input, torch::Tensor& scales, torch::Tensor const& smoothscale, bool round_after_smooth, double limit);
 void per_token_quant_int8_minimax_out(torch::Tensor&, const torch::Tensor&, torch::Tensor&, int64_t);
+void rope_per_token_quant_out(const torch::Tensor &, const torch::Tensor &,
+                              const torch::Tensor &, torch::Tensor &,
+                              torch::Tensor &, int64_t, int64_t, bool,
+                              int64_t, bool);
+void scale_per_token_quant_int8_out(
+    const torch::Tensor &, const torch::Tensor &, const torch::Tensor &,
+    std::optional<torch::Tensor>, torch::Tensor &, torch::Tensor &,
+    at::ScalarType, bool, int64_t, int64_t);
 void per_token_quant_int8_out(torch::Tensor& out, const torch::Tensor& input, torch::Tensor& scales,
     const c10::optional<torch::Tensor>& smooth, const c10::optional<torch::Tensor>& weights,
     const c10::optional<torch::Tensor>& gate_output);
@@ -641,7 +649,7 @@ void rms_norm_no_weight(
     torch::Tensor& input,
     torch::optional<torch::Tensor> weight,
     double epsilon);
-void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon,double limit);
+void fused_add_rms_norm_opt(torch::Tensor& input,torch::Tensor& residual, torch::Tensor& weight,double epsilon,double limit,bool use_aligned_loads = false);
 void layer_norm_opt(torch::Tensor& out,torch::Tensor& input,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
 void fused_add_layer_norm_opt(torch::Tensor& input,torch::Tensor& residual,torch::Tensor& weight,torch::Tensor& bias,double epsilon,double limit);
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
@@ -724,7 +732,7 @@ void fused_rms_norm_rope_int8quant_contiguous(
 void per_token_quant_fp8(
     torch::Tensor& out,          // [..., hidden_size]
     torch::Tensor const& input,  // [..., hidden_size]
-    torch::Tensor& scales);
+    torch::Tensor& scales, int64_t quant_ndim, int64_t threads);
 void rms_norm_smooth_per_token_dynamic_quant(
   Tensor &out,            
   Tensor& input,                
@@ -854,6 +862,12 @@ void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& out,
     int64_t page_size,
     std::optional<torch::Tensor> valid_count);
+void dsv4_gather_upconvert_combined_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t);
+void dsv4_gather_upconvert_query_reuse_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t, int64_t);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -874,6 +888,32 @@ void dsv4_gather_upconvert_dual_k_cache_paged(
     torch::Tensor const& extra_dst,
     torch::Tensor const& extra_compact,
     int64_t extra_page_size);
+void dsv4_gather_upconvert_dedup_k_cache_paged(
+    torch::Tensor const& cache,
+    torch::Tensor const& indices,
+    torch::Tensor const& lengths,
+    torch::Tensor const& dst,
+    torch::Tensor const& compact,
+    int64_t page_size,
+    torch::Tensor const& owner_map,
+    torch::Tensor const& epoch);
+void dsv4_gather_upconvert_dual_dedup_k_cache_paged(
+    torch::Tensor const& swa_cache,
+    torch::Tensor const& swa_indices,
+    torch::Tensor const& swa_lengths,
+    torch::Tensor const& swa_dst,
+    torch::Tensor const& swa_compact,
+    int64_t swa_page_size,
+    torch::Tensor const& swa_owner_map,
+    torch::Tensor const& swa_epoch,
+    torch::Tensor const& extra_cache,
+    torch::Tensor const& extra_indices,
+    torch::Tensor const& extra_lengths,
+    torch::Tensor const& extra_dst,
+    torch::Tensor const& extra_compact,
+    int64_t extra_page_size,
+    torch::Tensor const& extra_owner_map,
+    torch::Tensor const& extra_epoch);
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -1103,7 +1143,8 @@ std::vector<Tensor> bf16_mega_gate_hcu_impl(
     const Tensor& x, const Tensor& weight, const torch::optional<Tensor>& optional_bias, int64_t topk,
     bool renormalize, double routed_scaling_factor, bool apply_scale,
     const torch::optional<std::vector<Tensor>>& out,
-    const torch::optional<Tensor>& optional_mask);
+    const torch::optional<Tensor>& optional_mask,
+    const torch::optional<Tensor>& optional_physical_map, bool round_logits_to_bf16);
 std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
     const Tensor& x, const Tensor& weight, int64_t num_topk,
     bool use_shared_as_routed, int64_t num_shared_experts,
@@ -1167,6 +1208,13 @@ void mimo_v2_split_rope_vscale_kv_store(
 }
 
 
+namespace lightop_int8_blaslt {
+std::optional<torch::Tensor> scaled_mm(
+    const torch::Tensor& input, const torch::Tensor& weight,
+    const torch::Tensor& scale_input, const torch::Tensor& scale_weight,
+    int solution);
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("fill_swa_ring_mapping", &lightop::dsv41::fill_swa_ring_mapping,
         py::arg("mapping"), py::arg("requests"), py::arg("prefixes"),
@@ -1228,6 +1276,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("scale_b"), py::arg("output"), py::arg("m"), py::arg("n"),
         py::arg("k"), py::arg("batch"), py::arg("transpose_flag"),
         py::arg("alpha"), py::arg("beta"), py::arg("bias") = py::none());
+  m.def("_lmslimquant_blaslt_w8a8_bf16_gemm_cached",
+        &lightop_int8_blaslt::scaled_mm,
+        py::arg("input"), py::arg("weight"), py::arg("scale_input"),
+        py::arg("scale_weight"), py::arg("solution"));
   m.def("layernorm_forward_autograd", &at::native::fuse_layernorm_forward_autograd, "layernorm forward");
   m.def("layernorm_mixed_fp32_params_forward_autograd", &at::native::fuse_layernorm_mixed_fp32_params_autograd,
         "layernorm forward, activations half/bf16 and weight/bias float32");
@@ -1371,7 +1423,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("moe_gemm_marlin_w8a8_blockwise_fp8", &at::native::moe_gemm_marlin_w8a8_blockwise_fp8, "moe_gemm_marlin_w8a8_blockwise_fp8");
   m.def("moe_gemm_w4a8", &at::native::moe_gemm_w4a8, "moe_gemm_w4a8");
   m.def("gemm_w8_a8_smooth_colmajor", &at::native::gemm_w8_a8_smooth_colmajor, "gemm_w8_a8_smooth_colmajor");
-  m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm");
+  m.def("gemm_w8a8_smooth_asm", &at::native::gemm_w8a8_smooth_asm, "gemm_w8a8_smooth_asm",
+        py::arg("A"), py::arg("B"), py::arg("As"), py::arg("Bs"), py::arg("bias"),
+        py::arg("output_dtype"), py::arg("M"), py::arg("N"), py::arg("K"),
+        py::arg("isTunning_slide_block"), py::arg("tunning_slide_block"),
+        py::arg("input_scale_first") = false);
   m.def("moe_w16a16_asm", &at::native::moe_w16a16_asm, "moe_w16a16_asm");
   m.def("moe_marlin_w16a16_asm", &at::native::moe_marlin_w16a16_asm, "moe_marlin_w16a16_asm");
   m.def("bilinear_upsample", &at::native::bilinear_upsample, "bilinear_upsample");
@@ -1429,7 +1485,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("clamped_output") = py::none());
   m.def("mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",&at::native::mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang,
         "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang");
-  m.def("rms_norm_fp8_quant",&at::native::rms_norm_fp8_quant,"rms_norm_fp8_quant");
+  m.def("rms_norm_fp8_quant", &at::native::rms_norm_fp8_quant,
+        py::arg("out"), py::arg("input"), py::arg("weight"), py::arg("scales"),
+        py::arg("epsilon"), py::arg("residual"), py::arg("update_input"),
+        py::arg("fp8type"), py::arg("norm_output") = py::none());
+  m.attr("RMS_NORM_FP8_QUANT_VERSION") = 2;
   m.def("rotary_embedding_fuse", &at::native::rotary_embedding_fuse, "rotary_embedding_fuse",py::arg("positions"),py::arg("query"),py::arg("key"),py::arg("head_size"),py::arg("cos_sin_cache"),py::arg("is_neox"));
   m.attr("ROTARY_EMBEDDING_BF16_ROUNDED_OUT_ABI") = 2;
   m.def("rotary_embedding_deepseek_fuse",
@@ -1470,6 +1530,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("routed_scaling_factor"),
       py::arg("apply_routed_scaling_factor_on_output") = true);
   m.def("fuse_silu_mul_quant",&at::native::fuse_silu_mul_quant,"fuse_silu_mul_quant");
+  m.attr("SILU_CLAMP_QUANT_ROUNDING_VERSION") = 2;
   m.def(
       "fuse_silu_mul_clamp_quant",
       &at::native::fuse_silu_mul_clamp_quant,
@@ -1481,7 +1542,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("use_gelu") = false,
       py::arg("smooth_scale") = py::none(),
       py::arg("num_local_tokens_tensor") = py::none(),
-      py::arg("expect_m") = -1);
+      py::arg("expect_m") = -1,
+      py::arg("round_silu") = true);
   m.def(
       "fuse_silu_mul_clamp_quant_ep",
       &at::native::fuse_silu_mul_clamp_quant_ep,
@@ -1493,7 +1555,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("mask_m"),
       py::arg("expect_m") = -1,
       py::arg("use_gelu") = false,
-      py::arg("smooth_scale") = py::none());
+      py::arg("smooth_scale") = py::none(),
+      py::arg("round_silu") = true);
   m.def("fuse_silu_mul_quant_ep",&at::native::fuse_silu_mul_quant_ep,"fuse_silu_mul_quant_ep");
   m.def("fuse_situ_mul_quant_contiguous",&at::native::fuse_situ_mul_quant_contiguous,"fuse_situ_mul_quant_contiguous (kimi k3 softcap-glu + per-token int8 quant, contiguous)");
   m.def("fuse_situ_mul_quant_ep",(void (*)(torch::Tensor&, torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, int64_t))&at::native::fuse_situ_mul_quant_ep,"fuse_situ_mul_quant_ep (kimi k3 softcap-glu + per-token int8 quant, ep-masked; expect_m grid clamp)",py::arg("input"), py::arg("output"), py::arg("scales"), py::arg("masked_m"),py::arg("situ_beta"), py::arg("situ_linear_beta"),py::arg("expect_m") = -1);
@@ -1509,7 +1572,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("topK"),
       py::arg("expert_m"),
       py::arg("expert_ids"),
-      py::arg("limit") = -1.0f);
+      py::arg("limit") = -1.0f,
+      py::arg("per_token_scale") = false);
   m.def("swiglu_oai_fp8_quant_masked", &at::native::swiglu_oai_fp8_quant_masked, "Masked OAI SwiGLU with FP32 row-FP8 quantization");
   m.def("swiglu_oai_fp8_quant_masked_flat", &at::native::swiglu_oai_fp8_quant_masked_flat, "OAI row-FP8 quantization using live rows of 16 experts");
   m.def("fuse_silu_mul_fp8_quant_ep",&at::native::fuse_silu_mul_fp8_quant_ep,"fuse_silu_mul_fp8_quant_ep");
@@ -1698,7 +1762,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("destindex_dequantize_int8_cuda", &at::native::destindex_dequantize_int8_cuda, "destindex_dequantize_int8_cuda");
   m.def("kimi_k2_moe_fused_gate", &at::native::kimi_k2_moe_fused_gate, "kimi_k2_moe_fused_gate");
   m.def("fuse_rms_mrope_cuda", &at::native::fuse_rms_mrope_cuda,"fuse_rms_mrope_cuda");
-  m.def("ep_gather", &at::native::ep_gather, "ep_gather");
+  m.def("ep_gather", &at::native::ep_gather, "ep_gather",
+        py::arg("a"), py::arg("topk_ids"), py::arg("topk_weights"),
+        py::arg("inv_perm"), py::arg("expert_map"), py::arg("output"),
+        py::arg("specialize_k8") = false);
   m.def("backward_polyfill_cuda", &at::native::backward_polyfill_cuda, "backward_polyfill_cuda");
   m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
@@ -1714,6 +1781,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("smoothscale"),
       py::arg("round_after_smooth") = false,
       py::arg("limit") = -1.0);
+  m.def("rope_per_token_quant_out", &at::native::rope_per_token_quant_out);
+  m.def("scale_per_token_quant_int8_out",
+        &at::native::scale_per_token_quant_int8_out);
   m.def("per_token_quant_int8_minimax_out", &at::native::per_token_quant_int8_minimax_out);
   m.def(
       "per_token_quant_int8_out",
@@ -1749,7 +1819,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("residual"),
       py::arg("weight"),
       py::arg("epsilon"),
-      py::arg("limit") = -1.0);
+      py::arg("limit") = -1.0,
+      py::arg("use_aligned_loads") = false);
   m.def(
       "layer_norm_opt", &at::native::layer_norm_opt, "layer_norm_opt",
       py::arg("out"), py::arg("input"), py::arg("weight"), py::arg("bias"),
@@ -1796,7 +1867,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
      py::arg("scale"),
      py::arg("seq_starts") = py::none());
  m.def("fused_rms_norm_rope_int8quant_contiguous", &at::native::fused_rms_norm_rope_int8quant_contiguous, "fused_rms_norm_rope_int8quant_contiguous");    
- m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8, "per_token_quant_fp8");    
+ m.def("per_token_quant_fp8", &at::native::per_token_quant_fp8,
+       py::arg("out"), py::arg("input"), py::arg("scales"),
+       py::arg("quant_ndim") = 1, py::arg("threads") = 256);
+ m.attr("PER_TOKEN_QUANT_FP8_VERSION") = 2;
  m.def("rms_norm_smooth_per_token_dynamic_quant", &at::native::rms_norm_smooth_per_token_dynamic_quant, "rms_norm_smooth_per_token_dynamic_quant");   
  m.def("swiglu_oai_build_gate_table", &at::native::swiglu_oai_build_gate_table);
  m.def("swiglu_oai_build_int8_quant_table", &at::native::swiglu_oai_build_int8_quant_table);
@@ -1894,6 +1968,10 @@ m.def(
      "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
      py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"),
      py::arg("valid_count") = py::none());
+ m.def("dsv4_gather_upconvert_combined_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_combined_k_cache_paged);
+ m.def("dsv4_gather_upconvert_query_reuse_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_query_reuse_k_cache_paged);
  m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,
@@ -1902,6 +1980,24 @@ m.def(
      "dsv4_gather_upconvert_dual_k_cache_paged",
      &at::native::dsv4_gather_upconvert_dual_k_cache_paged,
      "DPSKV4 fused dual-cache paged gather, BF16 upconvert, and compact indices");
+ m.def(
+     "dsv4_gather_upconvert_dedup_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_dedup_k_cache_paged,
+     "DPSKV4 single-cache gather/upconvert that converts each location once "
+     "and points duplicate rows' compact indices at the owner row",
+     py::arg("cache"), py::arg("indices"), py::arg("lengths"), py::arg("dst"),
+     py::arg("compact"), py::arg("page_size"), py::arg("owner_map"),
+     py::arg("epoch"));
+ m.def(
+     "dsv4_gather_upconvert_dual_dedup_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_dual_dedup_k_cache_paged,
+     "DPSKV4 dual-cache deduplicating gather/upconvert",
+     py::arg("swa_cache"), py::arg("swa_indices"), py::arg("swa_lengths"),
+     py::arg("swa_dst"), py::arg("swa_compact"), py::arg("swa_page_size"),
+     py::arg("swa_owner_map"), py::arg("swa_epoch"),
+     py::arg("extra_cache"), py::arg("extra_indices"), py::arg("extra_lengths"),
+     py::arg("extra_dst"), py::arg("extra_compact"), py::arg("extra_page_size"),
+     py::arg("extra_owner_map"), py::arg("extra_epoch"));
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
@@ -1999,7 +2095,9 @@ m.def("_bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu_impl,
       py::arg("x"), py::arg("weight"), py::arg("bias"), py::arg("topk") = 6,
       py::arg("renormalize") = true, py::arg("routed_scaling_factor") = 1.0,
       py::arg("apply_scale") = false, py::arg("out") = py::none(),
-      py::arg("mask") = py::none());
+      py::arg("mask") = py::none(),
+      py::arg("physical_map") = py::none(),
+      py::arg("round_logits_to_bf16") = false);
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,

@@ -144,6 +144,15 @@ for _helper in ("dsv41_build_swa_token_ids", "dsv41_remap_indices_to_staging", "
         __all__ = [name for name in __all__ if name != _helper]
 del _helper, _attention_native
 
+# Keep the rest of attention importable with installations lacking this extension.
+try:
+    from ..dsv41_indexer_prep import dsv41_indexer_rope_fake_quant
+except ModuleNotFoundError as exc:
+    if exc.name != "lightop._dsv41_prep":
+        raise
+else:
+    __all__.append("dsv41_indexer_rope_fake_quant")
+
 from . import qkv as _qkv
 
 for _name in ('spark_mla_rope_cat_store', 'indexer_q_rope_hadamard_quant', 'mla_q_absorb_rope_concat'):
