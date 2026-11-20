@@ -330,3 +330,62 @@ def test_grouped_mqa_valid_prefix_compact_topk():
             q, kv, weights, lengths, table, width, group_size=3)
         assert torch.equal(actual[:, :n].contiguous().view(torch.uint8),
                            expected[:, :n].contiguous().view(torch.uint8))
+
+
+@pytest.mark.parametrize("kind", ["dense", "zero", "special", "overflow", "underfill"])
+def test_long_paged_top2048_exact_candidates(kind):
+    width, page_width, n = 1048704, 1048657, 870500
+    scores = values("special" if kind == "special" else "dense", width).cuda()
+    scores = scores.unsqueeze(0).expand(18, -1).contiguous()
+    lengths = torch.tensor([n+i % 9 for i in range(9)] +
+                           [0, 1, 2047, 2048, 2049, 32767, 131072, 131073, 262273],
+                           dtype=torch.int32, device="cuda")
+    if kind == "zero":
+        scores.zero_()
+    elif kind in ("overflow", "underfill"):
+        scores.fill_(1 if kind == "overflow" else 0)
+        for row in range(9):
+            ids = torch.arange(32768, device="cuda", dtype=torch.int64)
+            ids = ids * (n+row) // 32768
+            scores[row, ids] = 0 if kind == "overflow" else 100
+    pages = (torch.arange(page_width, device="cuda", dtype=torch.int32) * 3 + 17)
+    pages = pages.unsqueeze(0).expand(18, -1).contiguous()
+    cu = torch.arange(19, device="cuda", dtype=torch.int32)
+    expected = reference(scores.cpu(), lengths.cpu(), pages.cpu(), cu.cpu())
+    default = fast_topk_transform_fused(scores, lengths, pages, cu, K)
+    actual = fast_topk_transform_fused(
+        scores, lengths, pages, cu, K, long_parallel_candidates=True)
+    assert_unordered(default, expected)
+    assert_unordered(actual, expected)
+
+
+def test_long_paged_top2048_graph_updates():
+    width, page_width = 1048704, 1048657
+    scores = torch.randn((18, width), device="cuda")
+    lengths = torch.full((18,), 870500, device="cuda", dtype=torch.int32)
+    page_ids = torch.arange(page_width, device="cuda", dtype=torch.int32)
+    pages = page_ids.unsqueeze(0).expand(18, -1).contiguous()
+    cu = torch.arange(19, device="cuda", dtype=torch.int32)
+    fast_topk_transform_fused(scores, lengths, pages, cu, K,
+                              long_parallel_candidates=True)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        actual = fast_topk_transform_fused(
+            scores, lengths, pages, cu, K, long_parallel_candidates=True)
+    for update, n in enumerate((65536, 262144, 870500, 1048576, 1048584)):
+        scores.normal_()
+        lengths[:9].fill_(n)
+        lengths[9:].zero_()
+        pages.copy_((page_ids * 7 + update).unsqueeze(0).expand(18, -1))
+        graph.replay()
+        expected = fast_topk_transform_fused(scores, lengths, pages, cu, K)
+        assert_unordered(actual, expected)
+
+
+def test_long_paged_top2048_unsupported_geometry_retains_default():
+    args, expected = inputs("special", 8192, rows=6)
+    scores, lengths, pages, cu, starts = args
+    actual = fast_topk_transform_fused(scores, lengths, pages, cu, K, starts,
+                                      long_parallel_candidates=True)
+    assert_unordered(actual, expected)
