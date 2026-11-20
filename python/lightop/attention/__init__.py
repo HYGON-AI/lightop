@@ -10,7 +10,6 @@ PAGED_MQA_LOGITS_FP4_ABI = 3
 from ..minimax_qk_norm_rope import minimax_qk_norm_rope, supports_minimax_qk_norm_rope
 
 from ..dsv4_prefill import dsv41_rope_fake_quant_store
-from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
     fp8_fp4_paged_sparse_mqa_logits,
     prefill_sparse_mqa_fused,
@@ -33,46 +32,75 @@ from .mqa import (
     dsv41_remap_indices_to_staging,
     dsv41_ragged_topk_postprocess,
 )
-from .qkv import (
-    fuse_layernorm_rotary_embedding,
-    fuse_rmsnorm_rope_quant_qkv,
-    fused_deepseek_v4_qnorm_rope_kvnorm_rope,
-    fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32,
-    fused_rms_norm_rope_contiguous,
-    gemma_qkv_split_rms_rotary_embedding_fuse,
-    gammarms_rotary_embedding_fuse_with_kv_store,
-    gammarms_rotary_embedding_fuse_with_kv_store_fake,
-    mimo_v2_split_rope_vscale_kv_store,
-    rms_rotary_embedding_fuse,
-    rms_rotary_embedding_fuse_with_kv_store,
-    rms_rotary_embedding_fuse_with_kv_store_fake,
-    split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant,
-)
-from .sparse import (
-    convert_req_index_to_global_index,
-    fast_topk_transform_fused,
-    fast_topk_transform_sparse_mask_fused,
-    fast_topk_transform_ragged_fused,
-    top_k_per_row_decode,
-    top_k_per_row_prefill,
-    topk_transform_512,
-    topk_transform_1024,
-    topk_transform_ragged_v2,
-    fast_kpool_topk_transform_fused,
-)
 from .softmax import (
     FusedScaleMaskSoftmax,
     FusedScaleMaskSoftmaxDropout,
     FuseLogSoftmax,
     FuseSoftmax,
 )
-from .rope import (
-    RotaryEmbedding,
-    apply_rotary_pos_emb_index_fused,
-    fuse_rms_mrope_cuda,
-    rotary_embedding_deepseek_fuse,
-    rotary_embedding_fuse,
-)
+
+# These groups may be absent in a partial native build. Resolve their
+# public APIs only when requested, keeping unrelated groups importable.
+_LAZY_EXPORTS = {
+    name: module
+    for module, names in {
+        ".mhc": (
+            "mhc_repeat_cp_sglang",
+            "supports_mhc_repeat_cp_sglang",
+        ),
+        ".qkv": (
+            "fuse_layernorm_rotary_embedding",
+            "fuse_rmsnorm_rope_quant_qkv",
+            "fused_deepseek_v4_qnorm_rope_kvnorm_rope",
+            "fused_deepseek_v4_qnorm_rope_kvnorm_rope_quant_insert_int32",
+            "fused_rms_norm_rope_contiguous",
+            "gemma_qkv_split_rms_rotary_embedding_fuse",
+            "gammarms_rotary_embedding_fuse_with_kv_store",
+            "gammarms_rotary_embedding_fuse_with_kv_store_fake",
+            "mimo_v2_split_rope_vscale_kv_store",
+            "rms_rotary_embedding_fuse",
+            "rms_rotary_embedding_fuse_with_kv_store",
+            "rms_rotary_embedding_fuse_with_kv_store_fake",
+            "split_qkv_rms_rotary_embedding_fuse_with_kv_store_quant",
+        ),
+        ".sparse": (
+            "convert_req_index_to_global_index",
+            "fast_topk_transform_fused",
+            "fast_topk_transform_sparse_mask_fused",
+            "fast_topk_transform_ragged_fused",
+            "top_k_per_row_decode",
+            "top_k_per_row_prefill",
+            "topk_transform_512",
+            "topk_transform_1024",
+            "topk_transform_ragged_v2",
+            "fast_kpool_topk_transform_fused",
+        ),
+        ".rope": (
+            "RotaryEmbedding",
+            "apply_rotary_pos_emb_index_fused",
+            "fuse_rms_mrope_cuda",
+            "rotary_embedding_deepseek_fuse",
+            "rotary_embedding_fuse",
+        ),
+    }.items()
+    for name in names
+}
+
+
+def __getattr__(name):
+    module = _LAZY_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    from importlib import import_module
+
+    value = getattr(import_module(module, __name__), name)
+    globals()[name] = value
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
+
 
 __all__ = [
     "minimax_qk_norm_rope",
@@ -141,7 +169,7 @@ for _helper in ("dsv41_build_swa_token_ids", "dsv41_remap_indices_to_staging", "
     if not hasattr(_attention_native, _helper):
         globals().pop(_helper, None)
         __all__ = [name for name in __all__ if name != _helper]
-del _helper, _attention_native
+del _helper
 
 # Keep the rest of attention importable with installations lacking this extension.
 try:
@@ -152,9 +180,9 @@ except ModuleNotFoundError as exc:
 else:
     __all__.append("dsv41_indexer_rope_fake_quant")
 
-from . import qkv as _qkv
-
 for _name in ('spark_mla_rope_cat_store', 'indexer_q_rope_hadamard_quant', 'mla_q_absorb_rope_concat'):
-    if hasattr(_qkv, _name):
-        globals()[_name] = getattr(_qkv, _name)
+    if hasattr(_attention_native, _name):
+        globals()[_name] = getattr(_attention_native, _name)
         __all__.append(_name)
+
+del _name, _attention_native

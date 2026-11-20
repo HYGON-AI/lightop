@@ -3,7 +3,6 @@
 
 import os
 import subprocess
-import importlib
 from pathlib import Path
 from torch.utils.cpp_extension import ROCM_HOME
 ROOT_DIR = Path(__file__).parent.resolve()
@@ -21,7 +20,8 @@ def get_dtk_version(ROCM_HOME):
     return dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
-op = importlib.import_module('.op', __name__)
+from .core import load_ops as _load_ops
+op = _load_ops()
 
 
 from .utils import gfx, LIGHTOP_ROOT_DIR, LIGHTOP_ASM_DIR

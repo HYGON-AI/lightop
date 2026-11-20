@@ -2,18 +2,18 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Phase-0 pilot: split the "norm" family bindings into a dedicated extension
-// module (lightop._ext.op_norm), mirroring AITER's "one operator backend = one
+// module (lightop._ext.module_norm), mirroring AITER's "one operator backend = one
 // module_xxx.so" layout.
 //
 // Ported from the 1113 tree to the 1118/lightop-public tree, where the kernel
 // sources moved from csrc/rmsnorm/*.cu to csrc/kernels/rmsnorm/*.cu. The kernel
 // definitions already live there under `namespace at::native`. This file only
 // *declares* the pilot subset and exposes it on the new extension module, so
-// that op_full and op_norm never define the same Python module init symbol.
+// that the full extension and module_norm never define the same Python module init symbol.
 // It follows the style of csrc/pybind/export.cpp (declaration block +
 // PYBIND11_MODULE + m.def).
 //
-// Build selection: the op_norm extension is compiled with -DLIGHTOP_NORM_ONLY=1.
+// Build selection is controlled by the source list in module_registry.json.
 
 #include <torch/extension.h>
 
@@ -43,7 +43,7 @@ void fused_rms_norm_contiguous(torch::Tensor& out, torch::Tensor& input,
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.doc() = "LightOp norm operators (Phase-0 module split pilot)";
-  // Marker proving the aggregator (lightop/op.py) routed to this module.
+  // Marker proving the aggregator (lightop/core.py) routed to this module.
   m.attr("LIGHTOP_NORM_MODULE") = 1;
 
   m.def("rms_norm_opt", &at::native::rms_norm_opt, "rms_norm_opt",

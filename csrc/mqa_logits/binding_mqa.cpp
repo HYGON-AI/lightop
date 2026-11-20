@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Phase-1 pilot: split the "MQA logits" family bindings into a dedicated
-// extension module (lightop._ext.op_mqa_logits), mirroring AITER's "one
+// extension module (lightop._ext.module_mqa_logits), mirroring AITER's "one
 // operator backend = one module_xxx.so" layout and following the Phase-0
 // norm pilot (csrc/kernels/rmsnorm/binding_norm.cpp).
 //
@@ -21,11 +21,7 @@
 // dsv41_pair_partners) are intentionally NOT migrated: they belong to the
 // dsv4 prefill family and stay bound by the monolith.
 //
-// Dual-track pilot: while LIGHTOP_ENABLE_MQA_MODULE=1 the monolith
-// (lightop.op_full) still compiles these sources and keeps its bindings;
-// python/lightop/op.py routes MQA symbols to this module first. After the
-// pilot is verified, Step-2 removes the MQA globs from the monolith and
-// guards the corresponding export.cpp region.
+// Build with LIGHTOP_MODULES=mqa_logits to compile this family independently.
 
 #include <torch/extension.h>
 
@@ -124,7 +120,7 @@ void bind_prefill_sparse_fusion(pybind11::module_& m) {
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.doc() = "LightOp MQA logits operators (Phase-1 module split pilot)";
-  // Marker proving the aggregator (lightop/op.py) routed to this module.
+  // Marker proving the aggregator (lightop/core.py) routed to this module.
   m.attr("LIGHTOP_MQA_MODULE") = 1;
 
   // --- verbatim from csrc/pybind/export.cpp ---
