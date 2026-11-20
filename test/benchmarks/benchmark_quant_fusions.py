@@ -3,7 +3,7 @@
 """Opt-in BF16 transform/quantization comparisons on HIP; no serving framework.
 
 Each pair has identical input values and output layouts and must pass bitwise
-checks before timing. Standalone Triton RoPE/scale stages model the split
+checks before timing, with a numerical gate for gated RMSNorm. Standalone Triton RoPE/scale stages model the split
 preparation chain; the INT8 RoPE baseline explicitly uses half-away rounding.
 FP8 and scale-to-INT8 baselines reuse existing LightOp quantization. RMS pairs
 compare copy + existing fused RMS/quant against direct strided RMS/quant.
@@ -51,6 +51,7 @@ SUITES = (
     "strided-fp8",
     "rms-int8",
     "rms-fp8",
+    "gated-rms-int8",
 )
 
 
@@ -201,13 +202,13 @@ def check_bits(actual, expected):
             )
 
 
-def measure_pair(unfused, fused, args):
+def measure_pair(unfused, fused, args, check=check_bits):
     functions = {"unfused": unfused, "fused": fused}
     expected = tuple(
         None if value is None else value.clone(memory_format=torch.contiguous_format)
         for value in unfused()
     )
-    check_bits(fused(), expected)
+    check(fused(), expected)
     runners, retained_outputs = {}, {}
     for name, fn in functions.items():
         for _ in range(args.warmup):
@@ -219,7 +220,7 @@ def measure_pair(unfused, fused, args):
                 outputs = fn()
         graph.replay()
         retained_outputs[name] = outputs
-        check_bits(outputs, expected)
+        check(outputs, expected)
         runners[name] = graph
     samples = {name: [] for name in functions}
     for repeat in range(args.repeats):
@@ -236,12 +237,16 @@ def measure_pair(unfused, fused, args):
             end.synchronize()
             samples[name].append(start.elapsed_time(end) * 1000.0 / args.iterations)
     for outputs in retained_outputs.values():
-        check_bits(outputs, expected)
+        check(outputs, expected)
     medians = {name: statistics.median(values) for name, values in samples.items()}
     if min(medians.values()) <= 0:
         raise RuntimeError("timer resolution insufficient; increase --iterations")
     return {
-        "correctness": "bitwise output checks passed before/after graph replay",
+        "correctness": (
+            "bitwise output checks passed before/after graph replay"
+            if check is check_bits
+            else "numerical output checks passed before/after graph replay"
+        ),
         "median_us": medians,
         "samples_us": samples,
         "speedup": medians["unfused"] / medians["fused"],
@@ -450,6 +455,49 @@ def rms_case(api, tokens, width, fp8, args):
     }
 
 
+
+def gated_rms_case(api, tokens, args):
+    from lightop.norm import gated_rms_norm_per_token_int8_quant, layer_norm_fwd_1pass_opt
+
+    heads, width = 24, 128
+    rows = tokens * heads
+    x = torch.randn(rows, width, device="cuda", dtype=torch.bfloat16)
+    gate = torch.randn_like(x)
+    weight = torch.randn(width, device=x.device, dtype=x.dtype) * 0.25 + 1
+    normalized = torch.empty_like(x)
+    rstd = torch.empty(rows, device=x.device, dtype=torch.float32)
+    compute_units = torch.cuda.get_device_properties(x.device).multi_processor_count
+    rows_per_block = min(4, triton.next_power_of_2(triton.cdiv(rows, 2 * compute_units)))
+
+    def unfused():
+        layer_norm_fwd_1pass_opt(
+            x, normalized, weight, None, gate, None, rstd,
+            width, width, width, rows, width, 1e-6, width, rows_per_block,
+            False, True, True, True, "swish",
+        )
+        return api.quant_int8(normalized.view(tokens, heads * width))
+
+    def fused():
+        return gated_rms_norm_per_token_int8_quant(x, gate, weight, 1e-6, num_heads=heads)
+
+    def check(actual, expected):
+        q, scale = actual
+        ref_q, ref_scale = expected
+        torch.testing.assert_close(scale, ref_scale, rtol=8e-3, atol=0)
+        torch.testing.assert_close(q.to(torch.int16), ref_q.to(torch.int16), rtol=0, atol=1)
+        reference = ref_q.float() * ref_scale
+        error = (q.float() * scale - reference).norm()
+        if error > 1.5e-3 * reference.norm():
+            raise AssertionError("gated RMSNorm dequantized output exceeds tolerance")
+
+    return {
+        "operator": "gated_rms_norm_per_token_int8_quant",
+        "shape": [tokens, heads, width],
+        "baseline": "LightOp layer_norm_fwd_1pass_opt + per_token_quant_int8",
+        **measure_pair(unfused, fused, args, check=check),
+    }
+
+
 def file_record(module):
     path = getattr(module, "__file__", None)
     if path is None:
@@ -510,6 +558,8 @@ def environment(api, args):
 
 def cases(api, kernels, args):
     for tokens in args.tokens:
+        if args.suite == "gated-rms-int8":
+            yield gated_rms_case(api, tokens, args)
         if args.suite in ("all", "rope-int8"):
             yield rope_case(api, kernels, tokens, False, False, args)
         if args.suite in ("all", "scale-int8"):
