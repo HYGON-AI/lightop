@@ -18,6 +18,7 @@ Run from the repository root, for example::
     python3 test/benchmarks/benchmark_quant_fusions.py --tokens 40 48 --output /tmp/quant-fusions.json
     python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-int8 --tokens 40 48 64 96 128 --output /tmp/rope-int8.json
     python3 test/benchmarks/benchmark_quant_fusions.py --suite rope-fp8 --tokens 40 48 64 96 128 --output /tmp/rope-fp8.json
+    python3 test/benchmarks/benchmark_quant_fusions.py --suite sigmoid-int8 --tokens 1 4 128 512 2048 --output /tmp/sigmoid-int8.json
 
 Defaults: BF16, RoPE [T,64,512] with 8 groups and 64 rotary channels;
 INT32 scale [T,8,1024]; RMS widths 1280/1536/3072. Both FP8 group layouts,
@@ -45,6 +46,7 @@ torch = triton = tl = libdevice = None
 
 SUITES = (
     "all",
+    "sigmoid-int8",
     "rope-int8",
     "scale-int8",
     "rope-fp8",
@@ -177,7 +179,18 @@ def reference_kernels():
         # Store the BF16 rounding boundary before the separate INT8 quantizer.
         tl.store(Y + token * (GROUPS * RANK) + col, value, col < GROUPS * RANK)
 
-    return SimpleNamespace(rope=rope, quant_away=quant_away, scale=scale)
+    @triton.jit
+    def sigmoid_store(X, G, Y, GATE_ROW: tl.constexpr, GATE_HEAD: tl.constexpr):
+        row = tl.program_id(0).to(tl.int64)
+        col = tl.program_id(1) * 1024 + tl.arange(0, 1024)
+        attn_off = row * 3072 + col
+        gate_off = row * GATE_ROW + (col // 256) * GATE_HEAD + col % 256
+        x = tl.load(X + attn_off).to(tl.float32)
+        g = tl.load(G + gate_off).to(tl.float32)
+        tl.store(Y + attn_off, x * tl.sigmoid(g))
+
+    return SimpleNamespace(rope=rope, quant_away=quant_away, scale=scale,
+                           sigmoid_store=sigmoid_store)
 
 
 def check_bits(actual, expected):
@@ -412,6 +425,32 @@ def strided_fp8_case(api, tokens, major, args):
     }
 
 
+def sigmoid_int8_case(api, kernels, tokens, args):
+    from lightop.activation import fuse_sigmoid_mul_int8_quant
+
+    x = torch.randn(tokens, 3072, device="cuda", dtype=torch.bfloat16)
+    gate = torch.randn(tokens, 12, 512, device=x.device, dtype=x.dtype)[..., 256:]
+    gated = torch.empty_like(x)
+
+    def unfused():
+        kernels.sigmoid_store[(tokens, 3)](
+            x, gate, gated, gate.stride(0), gate.stride(1), num_warps=4
+        )
+        return api.quant_int8(gated)
+
+    def fused():
+        return fuse_sigmoid_mul_int8_quant(x, gate)
+
+    return {
+        "operator": "fuse_sigmoid_mul_int8_quant",
+        "shape": list(x.shape),
+        "gate_shape": list(gate.shape),
+        "gate_stride": list(gate.stride()),
+        "baseline": "Triton sigmoid-mul BF16 store + LightOp per-token INT8",
+        **measure_pair(unfused, fused, args),
+    }
+
+
 def rms_case(api, tokens, width, fp8, args):
     storage = torch.randn(tokens, width + 512, device="cuda", dtype=torch.bfloat16)
     x = storage[:, :width]
@@ -527,6 +566,8 @@ def cases(api, kernels, args):
                 for width in args.rms_widths:
                     if fp8 or width <= 8192:
                         yield rms_case(api, tokens, width, fp8, args)
+        if args.suite == "sigmoid-int8":
+            yield sigmoid_int8_case(api, kernels, tokens, args)
 
 
 def main():
