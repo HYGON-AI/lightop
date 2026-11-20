@@ -862,6 +862,12 @@ void dsv4_dequantize_k_cache_paged_out(
     torch::Tensor const& out,
     int64_t page_size,
     std::optional<torch::Tensor> valid_count);
+void dsv4_gather_upconvert_combined_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t);
+void dsv4_gather_upconvert_query_reuse_k_cache_paged(
+    const Tensor&, const Tensor&, const Tensor&, const Tensor&, const Tensor&,
+    const Tensor&, const Tensor&, const Tensor&, int64_t, int64_t);
 void dsv4_gather_upconvert_k_cache_paged(
     torch::Tensor const& cache,
     torch::Tensor const& indices,
@@ -882,6 +888,32 @@ void dsv4_gather_upconvert_dual_k_cache_paged(
     torch::Tensor const& extra_dst,
     torch::Tensor const& extra_compact,
     int64_t extra_page_size);
+void dsv4_gather_upconvert_dedup_k_cache_paged(
+    torch::Tensor const& cache,
+    torch::Tensor const& indices,
+    torch::Tensor const& lengths,
+    torch::Tensor const& dst,
+    torch::Tensor const& compact,
+    int64_t page_size,
+    torch::Tensor const& owner_map,
+    torch::Tensor const& epoch);
+void dsv4_gather_upconvert_dual_dedup_k_cache_paged(
+    torch::Tensor const& swa_cache,
+    torch::Tensor const& swa_indices,
+    torch::Tensor const& swa_lengths,
+    torch::Tensor const& swa_dst,
+    torch::Tensor const& swa_compact,
+    int64_t swa_page_size,
+    torch::Tensor const& swa_owner_map,
+    torch::Tensor const& swa_epoch,
+    torch::Tensor const& extra_cache,
+    torch::Tensor const& extra_indices,
+    torch::Tensor const& extra_lengths,
+    torch::Tensor const& extra_dst,
+    torch::Tensor const& extra_compact,
+    int64_t extra_page_size,
+    torch::Tensor const& extra_owner_map,
+    torch::Tensor const& extra_epoch);
 void fast_topk_transform_interface(
     const at::Tensor& score,
     const at::Tensor& lengths,
@@ -1110,7 +1142,8 @@ std::vector<Tensor> bf16_mega_gate_hcu_impl(
     const Tensor& x, const Tensor& weight, const torch::optional<Tensor>& optional_bias, int64_t topk,
     bool renormalize, double routed_scaling_factor, bool apply_scale,
     const torch::optional<std::vector<Tensor>>& out,
-    const torch::optional<Tensor>& optional_mask);
+    const torch::optional<Tensor>& optional_mask,
+    const torch::optional<Tensor>& optional_physical_map, bool round_logits_to_bf16);
 std::tuple<Tensor, Tensor> bf16_mega_gate_hcu(
     const Tensor& x, const Tensor& weight, int64_t num_topk,
     bool use_shared_as_routed, int64_t num_shared_experts,
@@ -1929,6 +1962,10 @@ m.def(
      "DSV4 flat E4M3FN/UE8M0 paged dequantization into preallocated BF16 output",
      py::arg("cache_u8"), py::arg("page_table"), py::arg("out"), py::arg("page_size"),
      py::arg("valid_count") = py::none());
+ m.def("dsv4_gather_upconvert_combined_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_combined_k_cache_paged);
+ m.def("dsv4_gather_upconvert_query_reuse_k_cache_paged",
+       &at::native::dsv4_gather_upconvert_query_reuse_k_cache_paged);
  m.def(
      "dsv4_gather_upconvert_k_cache_paged",
      &at::native::dsv4_gather_upconvert_k_cache_paged,
@@ -1937,6 +1974,24 @@ m.def(
      "dsv4_gather_upconvert_dual_k_cache_paged",
      &at::native::dsv4_gather_upconvert_dual_k_cache_paged,
      "DPSKV4 fused dual-cache paged gather, BF16 upconvert, and compact indices");
+ m.def(
+     "dsv4_gather_upconvert_dedup_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_dedup_k_cache_paged,
+     "DPSKV4 single-cache gather/upconvert that converts each location once "
+     "and points duplicate rows' compact indices at the owner row",
+     py::arg("cache"), py::arg("indices"), py::arg("lengths"), py::arg("dst"),
+     py::arg("compact"), py::arg("page_size"), py::arg("owner_map"),
+     py::arg("epoch"));
+ m.def(
+     "dsv4_gather_upconvert_dual_dedup_k_cache_paged",
+     &at::native::dsv4_gather_upconvert_dual_dedup_k_cache_paged,
+     "DPSKV4 dual-cache deduplicating gather/upconvert",
+     py::arg("swa_cache"), py::arg("swa_indices"), py::arg("swa_lengths"),
+     py::arg("swa_dst"), py::arg("swa_compact"), py::arg("swa_page_size"),
+     py::arg("swa_owner_map"), py::arg("swa_epoch"),
+     py::arg("extra_cache"), py::arg("extra_indices"), py::arg("extra_lengths"),
+     py::arg("extra_dst"), py::arg("extra_compact"), py::arg("extra_page_size"),
+     py::arg("extra_owner_map"), py::arg("extra_epoch"));
  m.def("fuse_act_quant_and_store_index_k_cache", &at::native::fuse_act_quant_and_store_index_k_cache, "fuse_act_quant_and_store_index_k_cache");
  m.def("fuse_qk_quant_and_store_index_k_cache", &at::native::fuse_qk_quant_and_store_index_k_cache, "fuse_qk_quant_and_store_index_k_cache");
  m.def("fuse_layernorm_rotary_embedding", &at::native::fuse_layernorm_rotary_embedding, "fuse_layernorm_rotary_embedding");
@@ -2034,7 +2089,9 @@ m.def("_bf16_mega_gate_hcu", &at::native::bf16_mega_gate_hcu_impl,
       py::arg("x"), py::arg("weight"), py::arg("bias"), py::arg("topk") = 6,
       py::arg("renormalize") = true, py::arg("routed_scaling_factor") = 1.0,
       py::arg("apply_scale") = false, py::arg("out") = py::none(),
-      py::arg("mask") = py::none());
+      py::arg("mask") = py::none(),
+      py::arg("physical_map") = py::none(),
+      py::arg("round_logits_to_bf16") = false);
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu",&at::native::moe_fused_gate_sqrtsoftplus_v41_hcu,"moe_fused_gate_sqrtsoftplus_v41_hcu");
 m.def("moe_fused_gate_sqrtsoftplus_v41_hcu_fused",
       &at::native::moe_fused_gate_sqrtsoftplus_v41_hcu_fused,
