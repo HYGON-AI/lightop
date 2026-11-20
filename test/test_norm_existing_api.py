@@ -25,6 +25,8 @@ EXISTING_NORM_APIS = [
     "LayerNormMixedFp32Weight",
     "layer_norm",
     "rms_norm_dynamic_per_token_quant",
+    "rms_norm_dynamic_per_token_quant_sglang",
+    "mla_qkv_a_rms_norm_dynamic_per_token_quant_sglang",
     "rms_norm",
     "rms_norm_per_token_fp8_quant",
     "rms_norm_per_token_quant",
@@ -62,4 +64,4 @@ def test_native_norm_api_is_direct_binding(name):
 def test_norm_public_api_inventory():
     assert set(lightop.norm.__all__) == set(
         EXISTING_NORM_APIS + NATIVE_NORM_APIS
-    ) | {"lm_faster_rmsquant"}
+    ) | {"lm_faster_rmsquant", "gated_rms_norm_per_token_fp8_quant"}

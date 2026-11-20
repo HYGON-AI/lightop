@@ -42,13 +42,17 @@ from .existing import (
     rmsnorm_forward_autograd,
 )
 
-_NATIVE_APIS = {"lm_faster_rmsquant"}
+_LAZY_APIS = {
+    "lm_faster_rmsquant": ".native",
+    "gated_rms_norm_per_token_fp8_quant": "._gated_rms_norm_fp8",
+}
 
 
 def __getattr__(name):
-    if name not in _NATIVE_APIS:
+    module = _LAZY_APIS.get(name)
+    if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(f"{__name__}.native"), name)
+    value = getattr(import_module(module, __name__), name)
     globals()[name] = value
     return value
 
@@ -64,6 +68,7 @@ __all__ = [
     "fused_add_layer_norm_opt",
     "fused_add_layer_norm",
     "fused_rms_norm_contiguous",
+    "gated_rms_norm_per_token_fp8_quant",
     "gemma_fused_add_rmsnorm",
     "gemma_rms_norm_per_token_fp8_quant",
     "gemma_rmsnorm",
