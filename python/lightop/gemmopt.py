@@ -873,7 +873,7 @@ def dsv41_gather_index_k_fp4(
     return op.dsv41_gather_index_k_fp4(cache, slots, page_size)
 
 
-def fp8_fp4_mqa_logits(
+def _fp8_fp4_mqa_logits_impl(
     q: tuple[torch.Tensor, Optional[torch.Tensor]],
     kv: tuple[torch.Tensor, torch.Tensor],
     weights: torch.Tensor,
@@ -930,9 +930,42 @@ def fp8_fp4_mqa_logits(
     )
 
 
-fp8_fp4_mqa_logits.supports_candidate_blocks = getattr(
-    op, "_fp8_fp4_mqa_logits_supports_candidates", False
-)
+class _Fp8Fp4MqaLogitsCallable:
+    """Callable proxy that defers probing module_mqa_logits until attribute access."""
+
+    def __init__(self):
+        functools.update_wrapper(self, _fp8_fp4_mqa_logits_impl)
+
+    def __call__(
+        self,
+        q: tuple[torch.Tensor, Optional[torch.Tensor]],
+        kv: tuple[torch.Tensor, torch.Tensor],
+        weights: torch.Tensor,
+        cu_seq_len_k_start: torch.Tensor,
+        cu_seq_len_k_end: torch.Tensor,
+        clean_logits: bool,
+        max_seqlen_k: int,
+        candidate_blocks: Optional[list[torch.Tensor]] = None,
+        candidate_query_lens: Optional[list[int]] = None,
+    ) -> torch.Tensor:
+        return _fp8_fp4_mqa_logits_impl(
+            q,
+            kv,
+            weights,
+            cu_seq_len_k_start,
+            cu_seq_len_k_end,
+            clean_logits,
+            max_seqlen_k,
+            candidate_blocks,
+            candidate_query_lens,
+        )
+
+    @property
+    def supports_candidate_blocks(self) -> bool:
+        return bool(getattr(op, "_fp8_fp4_mqa_logits_supports_candidates", False))
+
+
+fp8_fp4_mqa_logits = _Fp8Fp4MqaLogitsCallable()
 
 
 def get_paged_mqa_logits_metadata(

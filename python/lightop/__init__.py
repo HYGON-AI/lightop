@@ -20,7 +20,7 @@ def get_dtk_version(ROCM_HOME):
     return dtk_version
 
 dtk_version = get_dtk_version(ROCM_HOME) #动态获取运行时的dtk版本
-from .core import load_ops as _load_ops
+from .core import load_ops as _load_ops, preload_ops
 op = _load_ops()
 
 

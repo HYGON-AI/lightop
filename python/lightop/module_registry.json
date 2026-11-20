@@ -1,14 +1,20 @@
 {
     "norm": {
         "extension": "lightop._ext.module_norm",
+        "bindings": [
+            "./csrc/kernels/rmsnorm/binding_norm.cpp"
+        ],
         "sources": [
             "./csrc/kernels/rmsnorm/fuse_rms_add_opt.cu",
-            "./csrc/kernels/rmsnorm/fuse_rmsnorm_contiguous.cu",
-            "./csrc/kernels/rmsnorm/binding_norm.cpp"
-        ]
+            "./csrc/kernels/rmsnorm/fuse_rmsnorm_contiguous.cu"
+        ],
+        "libraries": ["rocblas"]
     },
     "mqa_logits": {
         "extension": "lightop._ext.module_mqa_logits",
+        "bindings": [
+            "./csrc/mqa_logits/binding_mqa.cpp"
+        ],
         "sources": [
             "./csrc/mqa_logits/*.cu",
             "./csrc/mqa_logits/bf16/*.cu",
@@ -17,8 +23,8 @@
             "./csrc/mqa_logits/int8/*.cu",
             "./csrc/mqa_logits/paged/*.cu",
             "./csrc/mqa_logits/sparse/*.cu",
-            "./csrc/kernels/index_k_int8_dequant/*.cu",
-            "./csrc/mqa_logits/binding_mqa.cpp"
-        ]
+            "./csrc/kernels/index_k_int8_dequant/*.cu"
+        ],
+        "libraries": ["rocblas"]
     }
 }

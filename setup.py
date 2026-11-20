@@ -26,16 +26,13 @@ dtk_version = get_dtk_version(ROCM_HOME)
 torch_version = _get_pytorch_version_int()
 
 # Load metadata directly: importing lightop would require built extensions.
-_core = runpy.run_path(
-    str(Path(__file__).resolve().parent / "python/lightop/core.py")
-)
+REPO_ROOT = Path(__file__).resolve().parent
+_core = runpy.run_path(str(REPO_ROOT / "python/lightop/core.py"))
 MODULES = _core["MODULES"]
 try:
-    LIGHTOP_MODULES = _core["select_modules"](os.environ)
+    BUILD_OP, BUILD_STANDALONE, SELECTED_SPLIT_MODULES = _core["select_build_targets"](os.environ)
 except ValueError as exc:
     raise SystemExit(str(exc)) from None
-ENABLE_ANY_SPLIT = bool(LIGHTOP_MODULES)
-BUILD_FULL = not LIGHTOP_MODULES
 
 
 def _find_rocm_home() -> Optional[str]:
@@ -297,10 +294,17 @@ class BuildReleaseExtension(BuildExtension):
         super(BuildReleaseExtension, self).__init__(*args, **kwargs)
 
     def run(self):
+        if not self.dry_run:
+            _core["write_op_registry"](
+                REPO_ROOT, REPO_ROOT / "python/lightop/_op_registry.py"
+            )
         super().run()
         if not self.dry_run and self.extensions:
-            modules = ", ".join(LIGHTOP_MODULES) if LIGHTOP_MODULES else "full"
-            print(f"\n[LightOp] Build succeeded: {modules}")
+            built = []
+            if BUILD_OP:
+                built.append("op")
+            built.extend(SELECTED_SPLIT_MODULES)
+            print(f"\n[LightOp] Build succeeded: {', '.join(built)}")
 
     def build_extensions(self) -> None:
         self._check_abi()
@@ -551,11 +555,8 @@ class BuildReleaseExtension(BuildExtension):
         build_ext.build_extensions(self)
 
     def build_extension(self, ext):
-        # Isolate Ninja state and object files for each split extension.
-        # Keep the default full build's existing temporary-directory layout.
-        if not ENABLE_ANY_SPLIT:
-            super().build_extension(ext)
-            return
+        # Always isolate Ninja state and object files per extension, since full builds
+        # compile both remaining lightop.op and split family extensions.
         orig_temp = self.build_temp
         self.build_temp = os.path.join(
             orig_temp, str(ext.name).replace('.', '__'))
@@ -636,13 +637,38 @@ def get_extensions():
         ('pybind', '*.cpp'),
     ]
 
+    def _expand_sources(patterns, mod_name):
+        resolved = []
+        for pattern in patterns:
+            if glob.has_magic(pattern):
+                matches = sorted(glob.glob(pattern))
+                if not matches:
+                    raise ValueError(f"{mod_name}: source pattern matched no files: {pattern}")
+                resolved.extend(matches)
+            else:
+                resolved.append(pattern)
+        return resolved
+
+    # Collect all sources owned by split modules so lightop.op never compiles them twice.
+    split_owned_sources = set()
+    resolved_split_sources = {}
+    for mod_name, spec in MODULES.items():
+        mod_srcs = _expand_sources(spec["sources"], mod_name)
+        mod_bindings = _expand_sources(spec["bindings"], mod_name)
+        resolved_split_sources[mod_name] = mod_srcs + mod_bindings
+        for path in mod_srcs + mod_bindings:
+            split_owned_sources.add(os.path.abspath(path))
+
     indexer_prep = "./csrc/kernels/mla/dsv41_indexer_prep.cu"
     op_files = []
-    if BUILD_FULL:
+    if BUILD_OP:
         for _src_dir, _src_pat in _CSRC_DIRS:
-            op_files += glob.glob(f'./csrc/{_src_dir}/{_src_pat}')
+            for src in sorted(glob.glob(f'./csrc/{_src_dir}/{_src_pat}')):
+                if os.path.abspath(src) not in split_owned_sources:
+                    op_files.append(src)
         # This source defines a standalone extension with stricter FP contraction.
-        op_files.remove(indexer_prep)
+        if indexer_prep in op_files:
+            op_files.remove(indexer_prep)
 
     extension = CUDAExtension
     # 迁移后只需要两个搜索根：csrc/ 与 csrc/include/。
@@ -653,8 +679,8 @@ def get_extensions():
     include_dirs.append(rocm_home+'/hiprand/include')
     include_dirs.append(rocm_home+'/rocrand/include')
     
-    if BUILD_FULL:
-        # Default full native extension.
+    if BUILD_OP:
+        # Remaining native extension after split families are extracted.
         ext_ops = extension(
             name="lightop.op",
             sources=op_files,
@@ -663,8 +689,9 @@ def get_extensions():
             library_dirs=[os.path.join(rocm_home, 'lib')],
             define_macros=define_macros,
             extra_compile_args=extra_compile_args)
-
         extensions.append(ext_ops)
+
+    if BUILD_STANDALONE:
         extensions.append(extension(
             name="lightop._router_gemm",
             sources=["./csrc/router/router_gemm.cu"],
@@ -677,27 +704,18 @@ def get_extensions():
         ))
 
     # Each family supplies only its additions to the common build settings.
-    for name in LIGHTOP_MODULES:
+    for name in SELECTED_SPLIT_MODULES:
         spec = MODULES[name]
-        sources = []
-        for source in spec["sources"]:
-            if glob.has_magic(source):
-                matches = glob.glob(source)
-                if not matches:
-                    raise ValueError(f"{name}: source pattern matched no files: {source}")
-                sources.extend(matches)
-            else:
-                sources.append(source)
         module_compile_args = {k: list(v) for k, v in extra_compile_args.items()}
         for compiler, flags in spec["extra_compile_args"].items():
             module_compile_args.setdefault(compiler, []).extend(flags)
         extensions.append(extension(
             name=spec["extension"],
-            sources=sources,
+            sources=resolved_split_sources[name],
             include_dirs=list(include_dirs) + [
                 os.path.abspath(path) for path in spec["include_dirs"]
             ],
-            libraries=['rocblas', 'hipblas', 'hipblaslt'],
+            libraries=list(spec["libraries"]),
             library_dirs=[os.path.join(rocm_home, 'lib')],
             define_macros=define_macros,
             extra_compile_args=module_compile_args,
@@ -728,6 +746,10 @@ class BuildPyWithResources(build_py):
     """Copy repository-level runtime resources into the installed package."""
 
     def run(self):
+        if not self.dry_run:
+            _core["write_op_registry"](
+                REPO_ROOT, REPO_ROOT / "python/lightop/_op_registry.py"
+            )
         super().run()
         package_root = os.path.join(self.build_lib, "lightop")
         for source, destination in PACKAGE_RESOURCE_DIRS.items():

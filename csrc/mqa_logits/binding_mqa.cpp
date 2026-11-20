@@ -32,6 +32,7 @@
 // relative to this file's directory (csrc/mqa_logits/), matching the style of
 // export.cpp; the 1118 tree regrouped the family under mqa_logits/{fp8_fp4,
 // paged,sparse}/ and moved index_k_int8_dequant under csrc/kernels/.
+#include "mqa_logits_api.h"
 #include "fp8_fp4/fp8_fp4_mqa_logits.h"
 #include "fp8_fp4/dsv41_mqa_prep.h"
 #include "paged/paged_mqa_logits.h"
@@ -137,6 +138,23 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
       py::arg("KV_scale") = torch::nullopt, 
       py::arg("clean_logits") = true,
       py::arg("D_out") = torch::nullopt);
+  m.def("mqa_logits_topk_sampled_int8", &lightop::mqa_int8::mqa_logits_topk_sampled_int8,
+      py::arg("q"),
+      py::arg("k"),
+      py::arg("weights"),
+      py::arg("kv_scale"),
+      py::arg("starts"),
+      py::arg("ends"),
+      py::arg("offsets"),
+      py::arg("sorted_values") = py::none(),
+      py::arg("next_thresholds") = py::none(),
+      py::arg("stats") = py::none(),
+      py::arg("parallel_histogram") = true,
+      py::arg("fallback_workspace_rows") = 0,
+      py::arg("reuse_full_window") = true,
+      py::arg("sort_topk") = true,
+      py::arg("min_sample_k") = 131072,
+      py::arg("direct_candidate_emit") = false);
   // --- verbatim from csrc/pybind/export.cpp ---
   m.def("get_paged_mqa_logits_metadata", &lightop::deep_gemm::get_paged_mqa_logits_metadata,"get_paged_mqa_logits_metadata");
   m.def("dsv41_mqa_query_lens", &lightop::fp4_mqa::dsv41_mqa_query_lens,
