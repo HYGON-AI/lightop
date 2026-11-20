@@ -38,6 +38,7 @@ from .existing import (
     silu_and_mul_opt,
 )
 
+from ._sigmoid_mul_int8 import fuse_sigmoid_mul_int8_quant
 from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
 
 _NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
@@ -57,6 +58,7 @@ __all__ = [
 
     "AddDropout",
     "DropPath",
+    "fuse_sigmoid_mul_int8_quant",
     "fuse_silu_and_mul",
     "fuse_silu_and_mul_ep",
     "fuse_silu_mul_clamp_quant",

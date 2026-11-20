@@ -51,6 +51,10 @@ print(y.shape)  # torch.Size([4, 4096])
 
 更多调用方式见 [test/](test/)。
 
+`lightop.activation.fuse_sigmoid_mul_int8_quant(attn_output, gate)` 对 BF16 attention 输出
+应用 sigmoid 门控，再做对称逐 token INT8 量化。gate 可传二维张量或三维带 stride
+的分头视图。接口返回 INT8 激活和每 token 的 FP32 scale。
+
 ## 测试
 
 安装好 LightOp 及 [CI 所列测试依赖](.github/workflows/pr-test.yml) 后，在仓库根目录执行：
