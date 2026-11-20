@@ -52,9 +52,44 @@ struct _typeConvert<c10::Half> {
   }
 };
 
-  #if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  #if defined(USE_ROCM)
+// ROCm / gfx938: enable bf16 with HCU conversion builtins
+template <>
+struct _typeConvert<c10::BFloat16> {
+  static constexpr bool exists = true;
+  using hip_type = __nv_bfloat16;
+  using packed_hip_type = __nv_bfloat162;
+
+  __device__ static inline float convert(hip_type x) {
+#if defined(__gfx938__)
+    return __builtin_hcu_cvt_f32_bf16(*reinterpret_cast<const short*>(&x), false, 0, false);
+#else
+    return __bfloat162float(x);
+#endif
+  }
+  __device__ static inline float2 convert(packed_hip_type x) {
+    float2 out;
+    out.x = convert(x.x);
+    out.y = convert(x.y);
+    return out;
+  }
+  __device__ static inline hip_type convert(float x) {
+#if defined(__gfx938__)
+    short tmp = static_cast<short>(__builtin_hcu_cvt_bf16_f32(x, false, false));
+    return *reinterpret_cast<hip_type*>(&tmp);
+#else
+    return __float2bfloat16(x);
+#endif
+  }
+  __device__ static inline packed_hip_type convert(float2 x) {
+    packed_hip_type out;
+    out.x = convert(x.x);
+    out.y = convert(x.y);
+    return out;
+  }
+};
+  #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
 // CUDA_ARCH < 800 does not have BF16 support
-// TODO: Add in ROCm support once public headers handle bf16 maturely
 template <>
 struct _typeConvert<c10::BFloat16> {
   static constexpr bool exists = true;
@@ -74,7 +109,7 @@ struct _typeConvert<c10::BFloat16> {
     return __float22bfloat162_rn(x);
   }
 };
-  #endif  // defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 800
+  #endif  // USE_ROCM / CUDA_ARCH
 #endif    // defined(USE_ROCM) || (defined(CUDA_VERSION) && (CUDA_VERSION >=
           // 12000))
 

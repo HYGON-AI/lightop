@@ -1,10 +1,34 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import sys
 import torch
 import time
 import traceback
 import random
+
+FP8_DTYPE_ALIASES = ("fp8", "fp8_e4m3", "float8", "float8_e4m3fn")
+FP8_E4M3_MAX = 448.0
+
+
+def _is_fp8_dtype(kv_cache_dtype_str: str) -> bool:
+    return kv_cache_dtype_str in FP8_DTYPE_ALIASES
+
+
+def _cache_dtype_for(kv_cache_dtype_str: str, input_dtype: torch.dtype) -> torch.dtype:
+    if kv_cache_dtype_str == "auto":
+        return input_dtype
+    if kv_cache_dtype_str == "int8":
+        return torch.int8
+    if _is_fp8_dtype(kv_cache_dtype_str):
+        return torch.uint8
+    raise ValueError(f"Unsupported kv_cache_dtype_str: {kv_cache_dtype_str}")
+
+
+def _quantize_fp8_e4m3(x: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+    q = torch.mul(x.float(), scale).to(torch.float8_e4m3fn)
+    return q.view(torch.uint8)
+
 
 def store_kvcache_paged_reference(
     key: torch.Tensor,
@@ -62,6 +86,13 @@ def store_kvcache_paged_reference(
                 v_quant = torch.round(torch.mul(src_v_token, v_scale)).to(torch_dst_dtype)
                 k_cache[physical_block_id, :, offset_in_block, :] = k_quant
                 v_cache[physical_block_id, :, offset_in_block, :] = v_quant
+            elif _is_fp8_dtype(kv_cache_dtype_str):
+                k_cache[physical_block_id, :, offset_in_block, :] = _quantize_fp8_e4m3(
+                    src_k_token, k_scale
+                )
+                v_cache[physical_block_id, :, offset_in_block, :] = _quantize_fp8_e4m3(
+                    src_v_token, v_scale
+                )
             else:
                 raise ValueError(f"Unsupported kv_cache_dtype_str: {kv_cache_dtype_str}")
 
@@ -134,7 +165,7 @@ def run_test_case(
     """
     print(f"\n{'='*25} {case_name}: DTYPE={kv_cache_dtype_str.upper()} {'='*25}")
 
-    cache_dtype = input_dtype if kv_cache_dtype_str == "auto" else torch.int8
+    cache_dtype = _cache_dtype_for(kv_cache_dtype_str, input_dtype)
 
     print("===== Test Configuration =====")
     print(f"Batch Size: {batch_size}, KV Heads: {kv_head_num}, Head Dim: {head_dim}")
@@ -164,7 +195,7 @@ def run_test_case(
     # --- Block Table Generation ---
     max_blocks_per_seq = (max_seq_len + block_size - 1) // block_size
     assert num_blocks >= batch_size * max_blocks_per_seq, "Not enough physical blocks to run test."
-    
+
     # Generate a pool of unique physical block IDs and assign them
     block_pool = random.sample(range(num_blocks), batch_size * max_blocks_per_seq)
     block_table = torch.tensor(block_pool, device=device, dtype=torch.int32).view(batch_size, max_blocks_per_seq)
@@ -181,6 +212,11 @@ def run_test_case(
         v_abs_max = torch.randn(kv_head_num, head_dim, device=device).abs() + 1.0
         k_scale = (qmax / k_abs_max).to(torch.float32)
         v_scale = (qmax / v_abs_max).to(torch.float32)
+    elif _is_fp8_dtype(kv_cache_dtype_str):
+        k_abs_max = torch.randn(kv_head_num, head_dim, device=device).abs() + 1.0
+        v_abs_max = torch.randn(kv_head_num, head_dim, device=device).abs() + 1.0
+        k_scale = (FP8_E4M3_MAX / k_abs_max).to(torch.float32)
+        v_scale = (FP8_E4M3_MAX / v_abs_max).to(torch.float32)
     else:
         k_scale = torch.ones(kv_head_num, head_dim, dtype=torch.float32, device=device)
         v_scale = torch.ones(kv_head_num, head_dim, dtype=torch.float32, device=device)
@@ -201,28 +237,28 @@ def run_test_case(
     }
     custom_kernel_available = store_kvcache_paged_custom(**args_custom)
 
+    passed = False
     if custom_kernel_available:
-        k_correct = torch.allclose(args_ref["k_cache"], args_custom["k_cache"], atol=1)
-        v_correct = torch.allclose(args_ref["v_cache"], args_custom["v_cache"], atol=1)
+        if kv_cache_dtype_str == "auto":
+            k_correct = torch.allclose(args_ref["k_cache"].float(), args_custom["k_cache"].float(), atol=1e-3, rtol=1e-3)
+            v_correct = torch.allclose(args_ref["v_cache"].float(), args_custom["v_cache"].float(), atol=1e-3, rtol=1e-3)
+        else:
+            k_correct = torch.allclose(args_ref["k_cache"], args_custom["k_cache"], atol=1)
+            v_correct = torch.allclose(args_ref["v_cache"], args_custom["v_cache"], atol=1)
         if k_correct and v_correct:
             print("✅ Correctness Test Passed: Custom kernel matches the torch reference.")
+            passed = True
         else:
             print("❌ Correctness Test Failed: Outputs do NOT match.")
     else:
         print("Skipping correctness test for custom kernel as it could not be imported/run.")
 
-    # # --- Performance Comparison ---
-    # print("\n--- Running Performance Comparison ---")
-    # time_ref = benchmark(store_kvcache_paged_reference, args_ref)
-    # print(f"Reference PyTorch : {time_ref:9.6f} ms (Baseline)")
-
-    # if custom_kernel_available:
-    #     time_custom = benchmark(store_kvcache_paged_custom, args_custom)
-    #     speedup = time_ref / time_custom if time_custom > 0 else float('inf')
-    #     print(f"Custom Kernel     : {time_custom:9.6f} ms ({speedup:.2f}x speedup vs Reference)")
+    return passed
 
 
 if __name__ == "__main__":
+    torch.manual_seed(0)
+    random.seed(0)
     # --- Global Test Configuration ---
     common_params = {
         "kv_head_num": 16,
@@ -247,15 +283,27 @@ if __name__ == "__main__":
         "CASE 3: SINGLE-REQUEST DECODING": {
             "batch_size": 1,
             "q_len_config": 1
-        }
+        },
+        "CASE 4: FLAT-LIKE SMALL KVH PREFILL": {
+            "batch_size": 1,
+            "q_len_config": 128,
+            "kv_head_num": 1,
+        },
     }
 
-    # --- Run All Tests ---
+    results = []
     for case_name, params in test_scenarios.items():
-        for kv_cache_dtype in ["int8", "auto"]:
-            run_test_case(
+        for kv_cache_dtype in ["int8", "auto", "fp8"]:
+            case_params = {**common_params, **params}
+            ok = run_test_case(
                 case_name=case_name,
                 kv_cache_dtype_str=kv_cache_dtype,
-                **common_params,
-                **params
+                **case_params,
             )
+            results.append((case_name, kv_cache_dtype, ok))
+
+    print("\n===== SUMMARY =====")
+    for name, dtype, ok in results:
+        print(f"{'PASS' if ok else 'FAIL'}: {name} / {dtype}")
+    if any(not r[2] for r in results):
+        sys.exit(1)
