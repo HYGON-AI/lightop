@@ -38,6 +38,7 @@ from .existing import (
     silu_and_mul_opt,
 )
 
+from .step5 import step5_swiglustep_fp8_quant
 from .swiglu_oai_quant import swiglu_oai_fp8_quant_masked
 
 _NATIVE_APIS = {"lm_fuse_silu_mul_quant", "fused_clamp_smooth"}
@@ -52,6 +53,7 @@ def __getattr__(name):
 
 
 __all__ = [
+    "step5_swiglustep_fp8_quant",
     "fused_clamp_smooth",
     "swiglu_oai_fp8_quant_contiguous",
 
