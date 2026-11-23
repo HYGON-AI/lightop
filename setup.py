@@ -555,6 +555,7 @@ def get_extensions():
     # 不用 csrc/**/*.cu 是因为 moe_marlin_gemm/w4a8/awq_marlin_repack_w4a8.cu
     # 是被 #include 引入的实现文件，递归 glob 会把它当成独立编译单元。
     _CSRC_DIRS = [
+        ('.', '*.cu'),
         ('asm', '*.cu'),
         ('awq_w4a16_gemm', '*.cu'),
         ('common', '*.cpp'),
