@@ -61,6 +61,7 @@ __global__ void index_select_row_vec_kernel(
     ScalarT* __restrict__ dst,
     int64_t dim,
     int64_t dst_batch,
+    int64_t src_batch,
     int vec_elems,
     bool use_remap) {
     const int ob = map_block(static_cast<int>(blockIdx.x), static_cast<int>(dst_batch), use_remap);
@@ -69,6 +70,11 @@ __global__ void index_select_row_vec_kernel(
     }
 
     const int64_t src_row = index[ob];
+    // The index tensor comes from the caller: a negative or oversized id would
+    // turn into an out-of-bounds src row. Skip it instead of reading stray memory.
+    if (src_row < 0 || src_row >= src_batch) {
+        return;
+    }
     const ScalarT* in = src + src_row * dim;
     ScalarT* out = dst + static_cast<int64_t>(ob) * dim;
 
@@ -89,6 +95,7 @@ __global__ void index_select_multirow_vec_kernel(
     ScalarT* __restrict__ dst,
     int64_t dim,
     int64_t dst_batch,
+    int64_t src_batch,
     int rows_per_block,
     int vec_elems) {
     const int base = static_cast<int>(blockIdx.x) * rows_per_block;
@@ -102,6 +109,9 @@ __global__ void index_select_multirow_vec_kernel(
             return;
         }
         const int64_t src_row = index[ob];
+        if (src_row < 0 || src_row >= src_batch) {
+            return;
+        }
         const ScalarT* in = src + src_row * dim;
         ScalarT* out = dst + static_cast<int64_t>(ob) * dim;
 
@@ -123,6 +133,7 @@ void launch_index_select(
     ScalarT* out,
     int64_t dim,
     int64_t dst_batch,
+    int64_t src_batch,
     int vec_elems,
     cudaStream_t stream) {
     // Each row is offset by src_row * dim * sizeof(ScalarT) bytes; the vectorized
@@ -148,20 +159,20 @@ void launch_index_select(
         const bool use_remap = grid_remap_is_bijective(dst_batch);
         if (aligned) {
             index_select_row_vec_kernel<VecT, ScalarT><<<dim3(dst_batch), dim3(threads), 0, stream>>>(
-            src, index, out, dim, dst_batch, vec_elems, use_remap);
+            src, index, out, dim, dst_batch, src_batch, vec_elems, use_remap);
         } else {
             index_select_row_vec_kernel<ScalarT, ScalarT><<<dim3(dst_batch), dim3(threads), 0, stream>>>(
-            src, index, out, dim, dst_batch, /*vec_elems=*/1, use_remap);
+            src, index, out, dim, dst_batch, src_batch, /*vec_elems=*/1, use_remap);
         }
     } else {
         int rows_per_block = (dim <= 256) ? 8 : 4;
         const int blocks = static_cast<int>((dst_batch + rows_per_block - 1) / rows_per_block);
         if (aligned) {
             index_select_multirow_vec_kernel<VecT, ScalarT><<<dim3(blocks), dim3(256), 0, stream>>>(
-            src, index, out, dim, dst_batch, rows_per_block, vec_elems);
+            src, index, out, dim, dst_batch, src_batch, rows_per_block, vec_elems);
         } else {
             index_select_multirow_vec_kernel<ScalarT, ScalarT><<<dim3(blocks), dim3(256), 0, stream>>>(
-            src, index, out, dim, dst_batch, rows_per_block, /*vec_elems=*/1);
+            src, index, out, dim, dst_batch, src_batch, rows_per_block, /*vec_elems=*/1);
         }
     }
 }
@@ -169,15 +180,23 @@ void launch_index_select(
 }  // namespace
 
 void index_select_opt_impl(torch::Tensor src, torch::Tensor index, torch::Tensor out) {
-    TORCH_CHECK(src.dim() == 2, "custom_index_select: src must be 2D");
-    TORCH_CHECK(index.dim() == 1, "custom_index_select: index must be 1D");
-    TORCH_CHECK(out.dim() == 2, "custom_index_select: out must be 2D");
+    // Shared by the allocating and the _out entry point: the _out variant used to
+    // skip every device/dtype check and could hand host pointers to the kernel.
+    TORCH_CHECK(src.is_cuda() && index.is_cuda() && out.is_cuda(),
+                "custom_index_select: CUDA/HIP tensors required");
+    TORCH_CHECK(src.dim() == 2 && index.dim() == 1 && out.dim() == 2,
+                "custom_index_select: src/out must be 2D and index 1D");
+    TORCH_CHECK(index.device() == src.device() && out.device() == src.device(),
+                "custom_index_select: tensors must live on the same device");
     TORCH_CHECK(src.is_contiguous() && out.is_contiguous() && index.is_contiguous(),
                 "custom_index_select: tensors must be contiguous");
     TORCH_CHECK(index.scalar_type() == at::kLong, "custom_index_select: index must be int64");
+    TORCH_CHECK(out.scalar_type() == src.scalar_type(),
+                "custom_index_select: out dtype must match src");
 
     const int64_t dim = src.size(1);
     const int64_t dst_batch = index.size(0);
+    const int64_t src_batch = src.size(0);
     TORCH_CHECK(out.size(0) == dst_batch && out.size(1) == dim,
                 "custom_index_select: out shape mismatch");
 
@@ -187,15 +206,15 @@ void index_select_opt_impl(torch::Tensor src, torch::Tensor index, torch::Tensor
 
     if (src.scalar_type() == at::kFloat) {
         launch_index_select<float4, float>(
-            src.data_ptr<float>(), ip, out.data_ptr<float>(), dim, dst_batch, /*vec=*/4, stream);
+            src.data_ptr<float>(), ip, out.data_ptr<float>(), dim, dst_batch, src_batch, /*vec=*/4, stream);
     } else if (src.scalar_type() == at::kBFloat16) {
         using BF = at::BFloat16;
         launch_index_select<uint4, BF>(
-            src.data_ptr<BF>(), ip, out.data_ptr<BF>(), dim, dst_batch, /*vec=*/8, stream);
+            src.data_ptr<BF>(), ip, out.data_ptr<BF>(), dim, dst_batch, src_batch, /*vec=*/8, stream);
     } else if (src.scalar_type() == at::kHalf) {
         using H = at::Half;
         launch_index_select<uint4, H>(
-            src.data_ptr<H>(), ip, out.data_ptr<H>(), dim, dst_batch, /*vec=*/8, stream);
+            src.data_ptr<H>(), ip, out.data_ptr<H>(), dim, dst_batch, src_batch, /*vec=*/8, stream);
     } else {
         TORCH_CHECK(false, "custom_index_select: only float16/bfloat16/float32 supported");
     }
@@ -209,10 +228,6 @@ namespace native {
 torch::Tensor index_select_opt(
     const torch::Tensor& src, int64_t dim, const torch::Tensor& index) {
   TORCH_CHECK(dim == 0, "index_select_opt: only dim=0 supported");
-  TORCH_CHECK(src.is_cuda() && index.is_cuda(), "index_select_opt: CUDA/HIP tensors");
-  TORCH_CHECK(src.dim() == 2 && index.dim() == 1, "index_select_opt: src 2D, index 1D");
-  TORCH_CHECK(src.is_contiguous() && index.is_contiguous(), "index_select_opt: contiguous");
-  TORCH_CHECK(index.scalar_type() == at::kLong, "index_select_opt: index int64");
   TORCH_CHECK(
       src.scalar_type() == at::kHalf || src.scalar_type() == at::kBFloat16 ||
           src.scalar_type() == at::kFloat,
