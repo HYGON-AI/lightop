@@ -70,9 +70,12 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
   if constexpr (BALANCED_M_GRID) {
-    // xpu-perf's synthetic MoE routing distributes dispatch tokens almost
-    // evenly across experts. Use that upper bound to avoid launching many
-    // empty M blocks that the asm kernel immediately skips.
+    // Shrinks the M grid to the average tokens per expert, which only covers every
+    // row when the routing is uniform: with a skewed distribution the blocks for the
+    // larger experts are never launched and those output rows keep stale values
+    // (measured: counts [256,16,...] -> 128 silent wrong rows). Callers must only
+    // select the BALANCED_M_GRID modes (1002/1005/1006/1009/1022+) for balanced
+    // dispatch; see the PR notes for the pending runtime gate.
     globalWorkSize[0] = DIVIDE(DIVIDE(size_m, experts_num), BLOCKM);
   } else {
     globalWorkSize[0] = DIVIDE(size_m, BLOCKM);
@@ -292,15 +295,11 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       }
     );
   } else if (mode == 1001) {
-    AT_DISPATCH_FLOATING_TYPES_AND2(
-      at::ScalarType::Half,
-      at::ScalarType::BFloat16,
-      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
-        _moe_groupgemm_marlin_w4a8_TN_impl<64, 512, 128, scalar_t>(
-          input, b_qweight, output, a_scale, b_scale,
-          problem_size, expert_offsets, experts_num);
-      }
-    );
+    // BLOCKM=64 measured numerically wrong against mode 1000 (E=8, 128 tok/expert,
+    // K=4096, N=2048: max_abs 5.6e4, every row differs) and no matching kernel for
+    // this tile is shipped, so reject it instead of returning silent garbage.
+    TORCH_CHECK(false, "moe_groupgemm_marlin_w4a8_asm: mode 1001 (BLOCKM=64) has no "
+                       "correct kernel variant; use mode 1000 or 1002");
   } else if (mode == 1002) {
     AT_DISPATCH_FLOATING_TYPES_AND2(
       at::ScalarType::Half,
