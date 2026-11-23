@@ -2,6 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+import random
+
+import pytest
 import torch
 import time
 import traceback
@@ -256,46 +259,76 @@ def run_test_case(
     return passed
 
 
-if __name__ == "__main__":
+# --- module-level configuration (shared by the pytest cases and the sweep) ---
+COMMON_PARAMS = {
+    "q_head_num": 32,
+    "kv_head_num": 16,
+    "head_dim": 256,
+    "max_kv_len": 4096,
+    "input_dtype": torch.bfloat16,
+    "device": "cuda",
+}
+
+TEST_SCENARIOS = {
+    "CASE 1: BATCH PREFILL": {
+        "batch_size": 16,
+        "q_len_config": (1, 1024),  # q_len 是 1 到 1024 之间的随机数
+    },
+    "CASE 2: SINGLE-REQUEST PREFILL": {
+        "batch_size": 1,
+        "q_len_config": (2, 1024),  # q_len 是 2 到 1024 之间的随机数
+    },
+    "CASE 3: SINGLE-REQUEST DECODING": {
+        "batch_size": 1,
+        "q_len_config": 1,  # q_len 固定为 1
+    },
+    # batch=1 + small kv_head triggers flat_prefill path (threads_needed < 64)
+    "CASE 4: FLAT PREFILL (kv_head=1)": {
+        "batch_size": 1,
+        "q_len_config": 128,
+        "kv_head_num": 1,
+        "q_head_num": 8,
+    },
+}
+
+# CI keeps the runtime bounded: two representative cases x two quantized dtypes.
+# int8/fp8 are the paths this file is meant to cover; `auto` is exercised by the
+# manual sweep below.
+CI_CASES = (
+    "CASE 3: SINGLE-REQUEST DECODING",
+    "CASE 4: FLAT PREFILL (kv_head=1)",
+)
+CI_DTYPES = ("int8", "fp8")
+
+
+@pytest.mark.parametrize("case_name", CI_CASES)
+@pytest.mark.parametrize("kv_cache_dtype", CI_DTYPES)
+def test_store_kv_cache(case_name: str, kv_cache_dtype: str) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
     torch.manual_seed(0)
-    # --- 全局测试配置 ---
-    common_params = {
-        "q_head_num": 32,
-        "kv_head_num": 16,
-        "head_dim": 256,
-        "max_kv_len": 4096,
-        "input_dtype": torch.bfloat16,
-        "device": 'cuda'
-    }
+    random.seed(0)
+    case_params = {**COMMON_PARAMS, **TEST_SCENARIOS[case_name]}
+    ok = run_test_case(
+        case_name=case_name,
+        kv_cache_dtype_str=kv_cache_dtype,
+        **case_params,
+    )
+    assert ok, (
+        f"{case_name} / {kv_cache_dtype}: custom kernel unavailable or output "
+        "mismatch against the torch reference (see stdout above)"
+    )
 
-    # --- 定义所有测试场景 ---
-    test_scenarios = {
-        "CASE 1: BATCH PREFILL": {
-            "batch_size": 16,
-            "q_len_config": (1, 1024) # q_len 是 1 到 1024 之间的随机数
-        },
-        "CASE 2: SINGLE-REQUEST PREFILL": {
-            "batch_size": 1,
-            "q_len_config": (2, 1024) # q_len 是 2 到 1024 之间的随机数
-        },
-        "CASE 3: SINGLE-REQUEST DECODING": {
-            "batch_size": 1,
-            "q_len_config": 1 # q_len 固定为 1
-        },
-        # batch=1 + small kv_head triggers flat_prefill path (threads_needed < 64)
-        "CASE 4: FLAT PREFILL (kv_head=1)": {
-            "batch_size": 1,
-            "q_len_config": 128,
-            "kv_head_num": 1,
-            "q_head_num": 8,
-        },
-    }
 
+def run_full_sweep() -> int:
+    """Manual sweep: every scenario x every dtype (not used by CI)."""
+    torch.manual_seed(0)
+    random.seed(0)
     dtypes = ["int8", "auto", "fp8"]
     results = []
-    for case_name, params in test_scenarios.items():
+    for case_name, params in TEST_SCENARIOS.items():
         for kv_cache_dtype in dtypes:
-            case_params = {**common_params, **params}
+            case_params = {**COMMON_PARAMS, **params}
             ok = run_test_case(
                 case_name=case_name,
                 kv_cache_dtype_str=kv_cache_dtype,
@@ -307,5 +340,10 @@ if __name__ == "__main__":
     print("\n===== SUMMARY =====")
     for name, dtype, ok in results:
         print(f"{'PASS' if ok else 'FAIL'}: {name} / {dtype}")
-    if failed:
-        sys.exit(1)
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    if "--full" in sys.argv:
+        raise SystemExit(run_full_sweep())
+    raise SystemExit(pytest.main([__file__, "-q"]))

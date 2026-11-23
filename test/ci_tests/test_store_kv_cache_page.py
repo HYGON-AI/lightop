@@ -2,6 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import sys
+
+import pytest
 import torch
 import time
 import traceback
@@ -255,46 +257,74 @@ def run_test_case(
 
     return passed
 
+# --- module-level configuration (shared by the pytest cases and the sweep) ---
+COMMON_PARAMS = {
+    "kv_head_num": 16,
+    "head_dim": 256,
+    "max_seq_len": 4096,
+    "block_size": 16,
+    "num_blocks": 16000,
+    "input_dtype": torch.bfloat16,
+    "device": "cuda",
+}
 
-if __name__ == "__main__":
+TEST_SCENARIOS = {
+    "CASE 1: BATCH PREFILL": {
+        "batch_size": 16,
+        "q_len_config": (1, 1024),
+    },
+    "CASE 2: SINGLE-REQUEST PREFILL": {
+        "batch_size": 1,
+        "q_len_config": (2, 1024),
+    },
+    "CASE 3: SINGLE-REQUEST DECODING": {
+        "batch_size": 1,
+        "q_len_config": 1,
+    },
+    "CASE 4: FLAT-LIKE SMALL KVH PREFILL": {
+        "batch_size": 1,
+        "q_len_config": 128,
+        "kv_head_num": 1,
+    },
+}
+
+# CI keeps the runtime bounded: two representative cases x two quantized dtypes.
+# int8/fp8 are the paths this file is meant to cover; `auto` is exercised by the
+# manual sweep below.
+CI_CASES = (
+    "CASE 3: SINGLE-REQUEST DECODING",
+    "CASE 4: FLAT-LIKE SMALL KVH PREFILL",
+)
+CI_DTYPES = ("int8", "fp8")
+
+
+@pytest.mark.parametrize("case_name", CI_CASES)
+@pytest.mark.parametrize("kv_cache_dtype", CI_DTYPES)
+def test_store_kv_cache_paged(case_name: str, kv_cache_dtype: str) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
     torch.manual_seed(0)
     random.seed(0)
-    # --- Global Test Configuration ---
-    common_params = {
-        "kv_head_num": 16,
-        "head_dim": 256,
-        "max_seq_len": 4096,
-        "block_size": 16,
-        "num_blocks": 16000,
-        "input_dtype": torch.bfloat16,
-        "device": 'cuda'
-    }
+    case_params = {**COMMON_PARAMS, **TEST_SCENARIOS[case_name]}
+    ok = run_test_case(
+        case_name=case_name,
+        kv_cache_dtype_str=kv_cache_dtype,
+        **case_params,
+    )
+    assert ok, (
+        f"{case_name} / {kv_cache_dtype}: custom kernel unavailable or output "
+        "mismatch against the torch reference (see stdout above)"
+    )
 
-    # --- Test Scenarios ---
-    test_scenarios = {
-        "CASE 1: BATCH PREFILL": {
-            "batch_size": 16,
-            "q_len_config": (1, 1024)
-        },
-        "CASE 2: SINGLE-REQUEST PREFILL": {
-            "batch_size": 1,
-            "q_len_config": (2, 1024)
-        },
-        "CASE 3: SINGLE-REQUEST DECODING": {
-            "batch_size": 1,
-            "q_len_config": 1
-        },
-        "CASE 4: FLAT-LIKE SMALL KVH PREFILL": {
-            "batch_size": 1,
-            "q_len_config": 128,
-            "kv_head_num": 1,
-        },
-    }
 
+def run_full_sweep() -> int:
+    """Manual sweep: every scenario x every dtype (not used by CI)."""
+    torch.manual_seed(0)
+    random.seed(0)
     results = []
-    for case_name, params in test_scenarios.items():
+    for case_name, params in TEST_SCENARIOS.items():
         for kv_cache_dtype in ["int8", "auto", "fp8"]:
-            case_params = {**common_params, **params}
+            case_params = {**COMMON_PARAMS, **params}
             ok = run_test_case(
                 case_name=case_name,
                 kv_cache_dtype_str=kv_cache_dtype,
@@ -305,5 +335,10 @@ if __name__ == "__main__":
     print("\n===== SUMMARY =====")
     for name, dtype, ok in results:
         print(f"{'PASS' if ok else 'FAIL'}: {name} / {dtype}")
-    if any(not r[2] for r in results):
-        sys.exit(1)
+    return 1 if any(not r[2] for r in results) else 0
+
+
+if __name__ == "__main__":
+    if "--full" in sys.argv:
+        raise SystemExit(run_full_sweep())
+    raise SystemExit(pytest.main([__file__, "-q"]))
