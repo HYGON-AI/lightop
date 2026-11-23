@@ -494,7 +494,11 @@ __device__ __forceinline__ bool is_u32_aligned(const void* p) {
 template <typename T>
 __device__ __forceinline__ void atomic_add_half_row(
     T* __restrict__ dst_row_ptr, const T* __restrict__ src_row_ptr, int64_t dim, int lane, int lane_stride) {
-    if (!is_u32_aligned(dst_row_ptr)) {
+    // The packed path does a 4B load from src and a 4B atomicCAS on dst, so both
+    // row starts must be naturally aligned; an odd dim makes their alignment
+    // depend on the row index, and src/dst row parity can differ (index remaps
+    // rows independently).
+    if (!is_u32_aligned(dst_row_ptr) || !is_u32_aligned(src_row_ptr)) {
         for (int64_t i = lane; i < dim; i += lane_stride) {
             atomic_add_half(dst_row_ptr + i, src_row_ptr[i]);
         }

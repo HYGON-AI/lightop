@@ -275,7 +275,10 @@ __global__ void layernorm_forward_kernel_stage2(scalar_t* input,scalar_t* ret,fl
     tx = X[j];
     #pragma unroll
     for(int i=0;i<VEC;i++){
-      int jj=line*cols+j*VEC+i;
+      // gamma/beta are column-wise ([cols]); indexing them with the row offset
+      // (line*cols) walks out of bounds for line > 0 and applies another row's
+      // weights, so keep the column index only.
+      int jj=j*VEC+i;
       if constexpr(is_affine){
         from_float(py[i],(to_float(px[i]) - tmean) * trstd * to_float(gamma[jj]) + to_float(beta[jj]));
       }
@@ -685,47 +688,20 @@ layernorm_forward(const Tensor& self,const Tensor& weight,const Tensor& bias,dou
                   : 16384;
               if(cols >= 16384 && cols % cols_per_block == 0){
                 int lines_per_block=cols/cols_per_block;
-                // Cached fused-reduction workspace, keyed by device: a bare `static`
-                // here would be shared across all CUDA devices and callers with no
-                // locking, so a different device (or a concurrent call on another
-                // stream) could race on the same buffer or read/write past its
-                // cached capacity. Guard with a mutex and key the cache by device.
-                static std::mutex workspace_mutex;
-                static std::unordered_map<int, float*> tmp_out_ptr_by_device;
-                static std::unordered_map<int, int*> sync_counter_ptr_by_device;
-                static std::unordered_map<int, size_t> tmp_cap_by_device;
-                static std::unordered_map<int, size_t> sync_cap_by_device;
+                // Per-call workspace taken from the PyTorch caching allocator:
+                // it is stream-ordered, so two kernels on different streams never
+                // share the sums/sync buffers (the old process-wide cache released
+                // its lock before the async kernels ran), and a failed allocation
+                // cannot leave a freed pointer behind in a static cache.
                 const size_t need_sum = (size_t)rows * 2 * sizeof(float);
                 const size_t need_sync = (size_t)rows * sizeof(int);
                 auto stream = at::cuda::getCurrentCUDAStream();
-                const int device = c10::cuda::current_device();
-                std::lock_guard<std::mutex> workspace_lock(workspace_mutex);
-                float*& tmp_out_ptr = tmp_out_ptr_by_device[device];
-                int*& sync_counter_ptr = sync_counter_ptr_by_device[device];
-                size_t& tmp_cap = tmp_cap_by_device[device];
-                size_t& sync_cap = sync_cap_by_device[device];
-                if (tmp_cap < need_sum) {
-                  if (tmp_out_ptr) hipFree(tmp_out_ptr);
-                  float* new_tmp_out_ptr = nullptr;
-                  const hipError_t tmp_err = hipMalloc(&new_tmp_out_ptr, need_sum);
-                  TORCH_CHECK(tmp_err == hipSuccess, "layernorm: failed to allocate fused workspace: ",
-                              hipGetErrorString(tmp_err));
-                  tmp_out_ptr = new_tmp_out_ptr;
-                  tmp_cap = need_sum;
-                }
-                if (sync_cap < need_sync) {
-                  if (sync_counter_ptr) hipFree(sync_counter_ptr);
-                  int* new_sync_counter_ptr = nullptr;
-                  const hipError_t sync_err = hipMalloc(&new_sync_counter_ptr, need_sync);
-                  TORCH_CHECK(sync_err == hipSuccess, "layernorm: failed to allocate sync counters: ",
-                              hipGetErrorString(sync_err));
-                  sync_counter_ptr = new_sync_counter_ptr;
-                  sync_cap = need_sync;
-                }
-                hipMemsetAsync(tmp_out_ptr, 0, need_sum, stream);
-                hipMemsetAsync(sync_counter_ptr, 0, need_sync, stream);
-                float* sums_ptr = tmp_out_ptr;
-                int* sync_ptr = sync_counter_ptr;
+                auto workspace = at::empty({static_cast<int64_t>(need_sum + need_sync)},
+                                           self.options().dtype(at::kByte));
+                float* sums_ptr = reinterpret_cast<float*>(workspace.data_ptr());
+                int* sync_ptr = reinterpret_cast<int*>(sums_ptr + (size_t)rows * 2);
+                hipMemsetAsync(sums_ptr, 0, need_sum, stream);
+                hipMemsetAsync(sync_ptr, 0, need_sync, stream);
                 if constexpr (sizeof(scalar_t) == 4) {
                   if (cols >= 524288) {
                     // tile 8192 (vecs=8, no spill) + gamma/beta reg cache across rows.

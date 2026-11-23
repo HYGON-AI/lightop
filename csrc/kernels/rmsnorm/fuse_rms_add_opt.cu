@@ -944,40 +944,15 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
   const int epb = (input.element_size() == 4) ? 8192 : 16384;
   if (ptrs_are_aligned && small_ptrs_are_aligned &&
       hidden_size >= 16384 && hidden_size % epb == 0) {
-    // Persistent workspace; memset each call (matches softmax zeros, keeps correctness).
-    // Cached per-device (not per-stream/thread) and guarded by a mutex so concurrent
-    // callers on different devices/streams don't race on the cached capacity/pointer.
-    static std::mutex workspace_mutex;
-    static std::unordered_map<int, float*> sum_ptr_by_device;
-    static std::unordered_map<int, int*> sync_ptr_by_device;
-    static std::unordered_map<int, size_t> sum_cap_by_device;
-    static std::unordered_map<int, size_t> sync_cap_by_device;
+    // Per-call workspace from the PyTorch caching allocator (stream-ordered): the
+    // previous per-device static cache released its mutex before the async kernels
+    // ran, so two streams could memset and consume the same sums/sync buffers.
     const size_t need_sum = (size_t)num_tokens * sizeof(float);
     const size_t need_sync = (size_t)num_tokens * sizeof(int);
-    const int device = c10::cuda::current_device();
-    std::lock_guard<std::mutex> workspace_lock(workspace_mutex);
-    float*& sum_ptr = sum_ptr_by_device[device];
-    int*& sync_ptr = sync_ptr_by_device[device];
-    size_t& sum_cap = sum_cap_by_device[device];
-    size_t& sync_cap = sync_cap_by_device[device];
-    if (sum_cap < need_sum) {
-      float* new_sum_ptr = nullptr;
-      const hipError_t sum_err = hipMalloc(&new_sum_ptr, need_sum);
-      TORCH_CHECK(sum_err == hipSuccess, "fused_add_rms_norm: failed to allocate sum workspace: ",
-                  hipGetErrorString(sum_err));
-      if (sum_ptr) hipFree(sum_ptr);
-      sum_ptr = new_sum_ptr;
-      sum_cap = need_sum;
-    }
-    if (sync_cap < need_sync) {
-      int* new_sync_ptr = nullptr;
-      const hipError_t sync_err = hipMalloc(&new_sync_ptr, need_sync);
-      TORCH_CHECK(sync_err == hipSuccess, "fused_add_rms_norm: failed to allocate sync workspace: ",
-                  hipGetErrorString(sync_err));
-      if (sync_ptr) hipFree(sync_ptr);
-      sync_ptr = new_sync_ptr;
-      sync_cap = need_sync;
-    }
+    auto workspace = at::empty({static_cast<int64_t>(need_sum + need_sync)},
+                               input.options().dtype(at::kByte));
+    float* sum_ptr = reinterpret_cast<float*>(workspace.data_ptr());
+    int* sync_ptr = reinterpret_cast<int*>(sum_ptr + (size_t)num_tokens);
     hipMemsetAsync(sum_ptr, 0, need_sum, stream);
     hipMemsetAsync(sync_ptr, 0, need_sync, stream);
 

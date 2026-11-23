@@ -128,9 +128,15 @@ void launch_index_select(
     // Each row is offset by src_row * dim * sizeof(ScalarT) bytes; the vectorized
     // kernels reinterpret that address as VecT* (16B), which is only well-defined
     // when every row start is 16B-aligned, i.e. dim is a multiple of vec_elems.
-    // When it is not, fall back to a scalar (VecT == ScalarT) instantiation so the
-    // tail-loop-only path is used and no misaligned vector load/store occurs.
-    const bool aligned = (dim % vec_elems == 0);
+    // The base pointers must be aligned as well: a contiguous tensor can still come
+    // from a sliced view whose storage_offset is not a multiple of 16B.
+    // When either condition fails, fall back to a scalar (VecT == ScalarT)
+    // instantiation so the tail-loop-only path is used and no misaligned vector
+    // load/store occurs.
+    constexpr size_t kVecBytes = sizeof(VecT);
+    const bool aligned = (dim % vec_elems == 0) &&
+                         (reinterpret_cast<uintptr_t>(src) % kVecBytes == 0) &&
+                         (reinterpret_cast<uintptr_t>(out) % kVecBytes == 0);
     if (dim >= kLargeDimThreshold) {
         int threads = 256;
         if (dim >= 16384) {

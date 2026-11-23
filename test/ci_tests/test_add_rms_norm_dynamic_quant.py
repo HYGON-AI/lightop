@@ -2,7 +2,8 @@
 """Accuracy: add_rms_norm_dynamic_quant vs torch reference.
 
 Primary (must pass): quant_tokens / per_token_scale / after_res vs torch math.
-after_norm: kernel stores (x+res)*weight *without* RMS; reported separately.
+after_norm (mode=2): kernel stores (x+res)*weight*rms, i.e. the full RMSNorm
+output, and is checked against the same torch RMS reference.
 """
 from __future__ import annotations
 
@@ -40,9 +41,7 @@ def _torch_add_rms_norm_dynamic_quant(
     amax = y.abs().amax(dim=-1)
     scale = torch.where(amax > 0, amax / 127.0, torch.ones_like(amax))
     q = torch.round(y / scale.unsqueeze(-1)).clamp(-127, 127).to(torch.int8)
-    # Kernel quirk for mode=2 side output:
-    after_norm_kernel_sem = (x * norm_weight.float()).to(hidden_states.dtype)
-    return q, scale, after_res, after_norm, after_norm_kernel_sem
+    return q, scale, after_res, after_norm
 
 
 def run_case(num_tokens: int, hidden: int, mode: int, seed: int = 0) -> dict:
@@ -65,7 +64,7 @@ def run_case(num_tokens: int, hidden: int, mode: int, seed: int = 0) -> dict:
     )
     torch.cuda.synchronize()
 
-    q_ref, scale_ref, ar_ref, an_ref, an_kern = _torch_add_rms_norm_dynamic_quant(
+    q_ref, scale_ref, ar_ref, an_ref = _torch_add_rms_norm_dynamic_quant(
         src, weight, smooth, residual, eps
     )
 
@@ -79,12 +78,15 @@ def run_case(num_tokens: int, hidden: int, mode: int, seed: int = 0) -> dict:
         extra["after_res"] = ar_diff
         ok = ok and ar_diff <= 2e-2
     if mode == 2:
-        an_vs_torch = float((after_norm.float() - an_ref.float()).abs().max().item())
-        an_vs_kern = float((after_norm.float() - an_kern.float()).abs().max().item())
-        extra["after_norm_vs_torch_rms"] = an_vs_torch
-        extra["after_norm_vs_x_times_w"] = an_vs_kern
-        # Side buffer follows kernel semantics (x+res)*w, not full RMS after_norm.
-        ok = ok and an_vs_kern <= 2e-2
+        # The kernel writes r_val_norm * rms, i.e. the full RMSNorm output
+        # (x+res)*weight*rms, so it is checked against the torch RMS reference.
+        # Compare with atol+rtol because one bf16 ULP at |x|~8 is already 0.03.
+        an_diff = float((after_norm.float() - an_ref.float()).abs().max().item())
+        an_close = bool(
+            torch.allclose(after_norm.float(), an_ref.float(), atol=2e-2, rtol=2e-2)
+        )
+        extra["after_norm_vs_torch_rms"] = an_diff
+        ok = ok and an_close
 
     return {
         "tag": f"T={num_tokens} H={hidden} mode={mode}",
@@ -104,19 +106,17 @@ def test_add_rms_norm_dynamic_quant(num_tokens: int, hidden: int, mode: int) -> 
     assert result["scale_max_diff"] < 2e-3, result
     if mode == 1:
         assert result["after_res"] <= 2e-2, result
+    if mode == 2:
+        assert result["ok"], result
 
 
-@pytest.mark.xfail(
-    reason="mode=2 after_norm side buffer does not follow (x+res)*weight on this build; "
-    "reported separately instead of failing the quantized-output contract",
-    strict=False,
-)
 @pytest.mark.parametrize(("num_tokens", "hidden"), ((16, 2048), (256, 4096)))
-def test_add_rms_norm_dynamic_quant_after_norm_matches_kernel_semantics(
+def test_add_rms_norm_dynamic_quant_after_norm_matches_torch(
     num_tokens: int, hidden: int
 ) -> None:
+    """mode=2 side buffer must equal the torch RMSNorm reference."""
     result = run_case(num_tokens, hidden, 2, seed=1)
-    assert result["after_norm_vs_x_times_w"] <= 2e-2, result
+    assert result["ok"], result
 
 
 def main() -> int:

@@ -189,7 +189,12 @@ __global__ __launch_bounds__(512, 2) void reduce_minmax_row_kernel(
 
     constexpr int E = kElementsPerLoad<T>;
     const int step = blockDim.x * E;
-    const int vec_end = (N / E) * E;
+    // A vector load is only well defined when this row's start address is aligned to
+    // LoadType: row_ptr = input + row*N, so an N that is not a multiple of E (or a
+    // base pointer coming from an offset view) makes the rows differently aligned.
+    // Such rows take the scalar path for the whole row.
+    const bool vec_ok = (reinterpret_cast<uintptr_t>(row_ptr) % sizeof(LoadType)) == 0;
+    const int vec_end = vec_ok ? (N / E) * E : 0;
 
     // Stagger the starting column across rows so concurrent CTAs do not march
     // in lockstep over power-of-two strides (L2 set conflicts on BW1100).

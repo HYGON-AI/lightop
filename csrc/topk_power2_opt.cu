@@ -136,6 +136,11 @@ __global__ void topk_kernel_k2_dedicated(
     __shared__ cmp_t smem_vals[BLOCK_SIZE * 2];
     __shared__ int smem_idxs[BLOCK_SIZE * 2];
 
+    // b is uniform inside a 64-lane wave, so a wave is either fully active or
+    // fully out of range. Each wave owns its own smem slice (tid*K) and only
+    // merges with lanes of the same wave, so wave-level sync is both sufficient
+    // and required here: a block-wide __syncthreads() would be reached by only
+    // part of the block when batch_size is not a multiple of WARPS_PER_BLOCK.
     int b = (blockIdx.x * WARPS_PER_BLOCK) + (threadIdx.x / WARP_SIZE);
     if (b >= batch_size) return;
 
@@ -185,7 +190,7 @@ __global__ void topk_kernel_k2_dedicated(
 
     smem_vals[tid_in_block * 2] = buf_vals[0]; smem_idxs[tid_in_block * 2] = buf_idxs[0];
     smem_vals[tid_in_block * 2 + 1] = buf_vals[1]; smem_idxs[tid_in_block * 2 + 1] = buf_idxs[1];
-    __syncthreads();
+    __syncwarp();
 
     for (int offset = WARP_SIZE / 2; offset > 0; offset >>= 1) {
         if (lane < offset) {
@@ -199,7 +204,7 @@ __global__ void topk_kernel_k2_dedicated(
         }
         smem_vals[tid_in_block * 2] = buf_vals[0]; smem_idxs[tid_in_block * 2] = buf_idxs[0];
         smem_vals[tid_in_block * 2 + 1] = buf_vals[1]; smem_idxs[tid_in_block * 2 + 1] = buf_idxs[1];
-        __syncthreads();
+        __syncwarp();
     }
 
     if (lane == 0) {
@@ -449,7 +454,7 @@ __global__ void topk_kernel_k4(
 
     #pragma unroll
     for (int i = 0; i < 4; ++i) { smem_vals[tid_in_block*4+i]=buf_vals[i]; smem_idxs[tid_in_block*4+i]=buf_idxs[i]; }
-    __syncthreads();
+    __syncwarp();
 
     for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
         if (lane < offset) {
@@ -464,7 +469,7 @@ __global__ void topk_kernel_k4(
         }
         #pragma unroll
         for (int i=0;i<4;++i){smem_vals[tid_in_block*4+i]=buf_vals[i];smem_idxs[tid_in_block*4+i]=buf_idxs[i];}
-        __syncthreads();
+        __syncwarp();
     }
 
     if (lane == 0) {
@@ -558,7 +563,7 @@ __global__ void topk_kernel_k4_unroll4(
 
     #pragma unroll
     for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-    __syncthreads();
+    __syncwarp();
 
     for(int offset=WARP_SIZE/2;offset>0;offset>>=1){
         if(lane<offset){
@@ -573,7 +578,7 @@ __global__ void topk_kernel_k4_unroll4(
         }
         #pragma unroll
         for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-        __syncthreads();
+        __syncwarp();
     }
 
     if(lane==0){
@@ -625,7 +630,7 @@ __global__ void topk_kernel_k8(
 
     #pragma unroll
     for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-    __syncthreads();
+    __syncwarp();
 
     for(int offset=WARP_SIZE/2;offset>0;offset>>=1){
         if(lane<offset){
@@ -640,7 +645,7 @@ __global__ void topk_kernel_k8(
         }
         #pragma unroll
         for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-        __syncthreads();
+        __syncwarp();
     }
 
     if(lane==0){
@@ -721,7 +726,7 @@ __global__ void topk_kernel_k8_unroll4(
 
     #pragma unroll
     for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-    __syncthreads();
+    __syncwarp();
 
     for(int offset=WARP_SIZE/2;offset>0;offset>>=1){
         if(lane<offset){
@@ -736,7 +741,7 @@ __global__ void topk_kernel_k8_unroll4(
         }
         #pragma unroll
         for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=buf_vals[i];smem_idxs[tid_in_block*K+i]=buf_idxs[i];}
-        __syncthreads();
+        __syncwarp();
     }
 
     if(lane==0){
@@ -824,7 +829,7 @@ __global__ void topk_kernel_k16(
         for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=merged[i];smem_idxs[tid_in_block*K+i]=merged_idx[i];}
     }
 
-    __syncthreads();
+    __syncwarp();
 
     cmp_t final_vals[K];int final_idxs[K];
     #pragma unroll
@@ -843,7 +848,7 @@ __global__ void topk_kernel_k16(
         }
         #pragma unroll
         for(int i=0;i<K;++i){smem_vals[tid_in_block*K+i]=final_vals[i];smem_idxs[tid_in_block*K+i]=final_idxs[i];}
-        __syncthreads();
+        __syncwarp();
     }
 
     if(lane==0){
