@@ -394,6 +394,126 @@ def test_paged_mqa_logits_prefill(chunk, csv_writer=None):
         torch.backends.cuda.matmul.allow_tf32 = previous_tf32
 
 
+
+
+@pytest.mark.parametrize("heads", [8, 16, 32, 64])
+@pytest.mark.parametrize("group", [1, 2, 3, 4, 5])
+def test_grouped_paged_mqa_integer_regression(heads, group):
+    from lightop.attention import paged_mqa_logits_persisten
+    if not torch.cuda.is_available():
+        pytest.skip("GPU required")
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    if getattr(props, "gcnArchName", "").split(":")[0] != "gfx936":
+        pytest.skip("gfx936 required")
+    torch.manual_seed(2026111500 + heads + group)
+    rows, width, blocks = group * 2 + 1, 320, 17
+    q = torch.randint(-3, 4, (rows, 1, heads, 128), device="cuda", dtype=torch.int8)
+    kv = torch.randint(-3, 4, (blocks, 64, 1, 128), device="cuda", dtype=torch.int8)
+    scales = torch.ones((blocks, 64), device="cuda", dtype=torch.float32)
+    packed = pack_int8_fused_cache(kv, scales)
+    weights = torch.ones((rows, heads), device="cuda", dtype=torch.float32)
+    lengths = (torch.arange(rows, device="cuda", dtype=torch.int32) * 31 + 1).clamp(max=287)
+    tables = torch.randint(0, blocks, (rows, 5), device="cuda", dtype=torch.int32)
+    actual = paged_mqa_logits_persisten(q, packed, weights, lengths, tables, width, group_size=group)
+    expected = ref_paged_mqa_logits(q, kv, weights, lengths, tables, width, scales)
+    assert torch.equal(actual, expected)
+
+
+def test_sampled_paged_mqa_default_disabled():
+    from lightop.attention import paged_mqa_topk_sampled_int8
+    assert paged_mqa_topk_sampled_int8(*([None] * 7), 262400) is None
+
+
+@pytest.mark.parametrize("bs", [1, 2, 3, 4, 8, 16, 32])
+@pytest.mark.parametrize("kind", ["normal", "zero", "nonfinite", "invalid_pages", "uneven", "short"])
+def test_sampled_paged_mqa_exact_sets_and_graph(kind, bs):
+    check_sampled_paged_mqa(kind, 9 * bs, 9)
+
+
+@pytest.mark.parametrize(("rows", "rows_per_request", "kind"), [
+    (1, 1, "normal"), (2, 2, "normal"), (3, 3, "normal"), (4, 4, "zero"),
+    (6, 3, "normal"), (7, 4, "invalid_pages"), (8, 4, "normal"),
+    (8, 4, "zero"), (8, 4, "short"), (8, 4, "uneven"),
+    (10, 5, "normal"), (287, 4, "normal"),
+])
+def test_sampled_paged_mqa_query_rows(rows, rows_per_request, kind):
+    check_sampled_paged_mqa(kind, rows, rows_per_request)
+
+
+def check_sampled_paged_mqa(kind, rows, rows_per_request):
+    from lightop import op
+    from lightop.attention import paged_mqa_logits_persisten, paged_mqa_topk_sampled_int8
+    if not torch.cuda.is_available():
+        pytest.skip("GPU required")
+    props = torch.cuda.get_device_properties(torch.cuda.current_device())
+    if getattr(props, "gcnArchName", "").split(":")[0] != "gfx936":
+        pytest.skip("gfx936 required")
+    width, blocks = 262400, 8216
+    requests = (rows + rows_per_request - 1) // rows_per_request
+    q = torch.empty((rows, 1, 32, 128), device="cuda", dtype=torch.int8)
+    packed = torch.empty((blocks, 64, 1, 132), device="cuda", dtype=torch.int8)
+    weights = torch.empty((rows, 32), device="cuda", dtype=torch.float32)
+    lengths = torch.empty(rows, device="cuda", dtype=torch.int32)
+    tables = torch.empty((rows, width // 64), device="cuda", dtype=torch.int32)
+    pages = torch.empty((rows, width), device="cuda", dtype=torch.int32)
+    cu = torch.arange(rows + 1, device="cuda", dtype=torch.int32)
+    def update(generation):
+        torch.manual_seed(2026111500 + generation)
+        q.random_(-100, 101)
+        flat = packed.view(blocks, -1)
+        flat[:, :8192].copy_(torch.randint(-100, 101, (blocks, 8192), device="cuda", dtype=torch.int8))
+        flat[:, 8192:].copy_((torch.rand((blocks, 64), device="cuda") * .01 + .001).contiguous().view(torch.int8))
+        weights.uniform_(.001, .01)
+        lengths.fill_(width - 17)
+        lengths[9:-1].fill_(1)
+        request_tables = torch.stack([
+            torch.randperm(blocks, device="cuda", dtype=torch.int32)[:width // 64]
+            for _ in range(requests)
+        ])
+        tables.copy_(request_tables.repeat_interleave(rows_per_request, 0)[:rows])
+        if kind == "zero":
+            weights.zero_()
+        elif kind == "nonfinite":
+            weights[0].fill_(float("nan"))
+            weights[1].fill_(float("inf"))
+        elif kind == "invalid_pages":
+            tables[:, ::13] = -1
+        elif kind == "uneven":
+            lengths[:3].copy_(torch.tensor([262145, 262200, 262350], device="cuda", dtype=torch.int32))
+            tables[1:3].copy_(tables[:2].clone())
+        elif kind == "short":
+            values = [0, 1, 63, 64, 65, 2047, 2048, 2049, 32768, 65536, 262144, 262145, 262207, 262208, 262272, 262273, width - 1, width]
+            lengths.copy_(torch.tensor((values * ((rows + len(values) - 1) // len(values)))[:rows], device="cuda", dtype=torch.int32))
+        pages.copy_((tables[:, :, None] * 64 + torch.arange(64, device="cuda", dtype=torch.int32)).reshape(rows, width))
+    def baseline():
+        logits = paged_mqa_logits_persisten(q, packed, weights, lengths, tables, width, group_size=3, clean_logits=rows != 18)
+        result = torch.empty((rows, 2048), device="cuda", dtype=torch.int32)
+        op.fast_topk_transform_interface(logits, lengths, result, pages, cu, None, False)
+        return result
+    def candidate():
+        return paged_mqa_topk_sampled_int8(q, packed, weights, lengths, tables, pages, cu, width, enabled=True)
+    update(0)
+    for _ in range(3):
+        baseline()
+        candidate()
+    torch.cuda.synchronize()
+    graphs, outputs = [], []
+    for fn in [baseline, candidate]:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            result = fn()
+        graphs.append(graph)
+        outputs.append(result)
+    for generation in range(3):
+        update(generation + 1)
+        a, b = baseline(), candidate()
+        assert b is not None
+        assert torch.equal(a.sort(1).values, b.sort(1).values)
+        for graph in graphs:
+            graph.replay()
+        assert torch.equal(outputs[0].sort(1).values, outputs[1].sort(1).values)
+
+
 if __name__ == '__main__':
     if not torch.cuda.is_available():
         raise RuntimeError("A CUDA/ROCm device is required")

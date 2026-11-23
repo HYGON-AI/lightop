@@ -886,7 +886,8 @@ void combine_topk_swa_indices_hcu(
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
     const Tensor& compressed_base, const Tensor& swa_base,
     Tensor& out_indices, Tensor& out_lens,
-    int64_t window_size, int64_t compress_ratio, int64_t topk);
+    int64_t window_size, int64_t compress_ratio, int64_t topk,
+    const std::optional<Tensor>& swa_indices, const std::optional<Tensor>& swa_lengths);
 std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
     const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
     int64_t, int64_t);
@@ -968,7 +969,8 @@ void fast_topk_transform_interface(
     const at::Tensor& src_page_table,
     const at::Tensor& cu_seqlens_q,
     std::optional<at::Tensor> row_starts_opt,
-    bool parallel_candidates);
+    bool parallel_candidates,
+    bool long_parallel_candidates);
 void fast_topk_transform_sparse_mask_interface(
     const at::Tensor& score,
     const at::Tensor& nonzero_mask,
@@ -1708,6 +1710,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("max_context_len"), py::arg("clean_logits") = true,
         py::arg("num_warps") = 4, py::arg("persistent_ctas") = 0,
         py::arg("group_size") = 1);
+  m.def("paged_mqa_topk_sampled_int8", &lightop::deep_gemm::paged_mqa_topk_sampled_int8,
+        py::arg("q"), py::arg("fused_kv_cache"), py::arg("weights"),
+        py::arg("context_lens"), py::arg("block_table"), py::arg("page_table_1"),
+        py::arg("cu_seqlens_q"), py::arg("max_context_len"));
   m.def("paged_mqa_logits_fp4", &lightop::deep_gemm::paged_mqa_logits_fp4,
         "DeepGEMM fp8_fp4_paged_mqa_logits (clean_logits=False) on the fused FP4 index-K pool",
         py::arg("q"), py::arg("q_sf"), py::arg("kv_cache"), py::arg("weights"),
@@ -1974,7 +1980,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "transform length TopK indices into paged KVCache",
         py::arg("score"), py::arg("lengths"), py::arg("dst_page_table"),
         py::arg("src_page_table"), py::arg("cu_seqlens_q"),
-        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false);
+        py::arg("row_starts_opt"), py::arg("parallel_candidates") = false,
+        py::arg("long_parallel_candidates") = false);
  m.def(
      "fast_topk_transform_sparse_mask_interface",
      &at::native::fast_topk_transform_sparse_mask_interface,
@@ -2028,8 +2035,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        "Dequantize the GPU-counted valid KV prefix into preallocated BF16 output",
        py::arg("cache"), py::arg("token_ids"), py::arg("out"),
        py::arg("page_size"), py::arg("fp8_fnuz"), py::arg("valid_count"));
+ m.attr("COMBINE_TOPK_SWA_INDICES_ABI") = py::int_(2);
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
-       "Combine compressed TopK and positional SWA indices into a flat workspace");
+       "Combine compressed TopK and positional or explicit SWA into a flat workspace",
+       py::arg("topk_indices"), py::arg("query_start_loc"), py::arg("query_pos"),
+       py::arg("seq_lens"), py::arg("gather_lens"), py::arg("compressed_base"),
+       py::arg("swa_base"), py::arg("out_indices"), py::arg("out_lens"),
+       py::arg("window_size"), py::arg("compress_ratio"), py::arg("topk"),
+       py::arg("swa_indices") = py::none(), py::arg("swa_lengths") = py::none());
  m.def("dsv4_pack_c4_topk_workspace",
       &at::native::dsv4_pack_c4_topk_workspace,
       "Pack a DSV4 C4 TopK union and remap query indices on GPU",

@@ -22,4 +22,10 @@ torch::Tensor paged_mqa_logits_persisten(
     const int& persistent_ctas,
     const int& group_size);
 
+torch::Tensor paged_mqa_topk_sampled_int8(
+    const torch::Tensor& q, const torch::Tensor& kv,
+    const torch::Tensor& weights, const torch::Tensor& lengths,
+    const torch::Tensor& table, const torch::Tensor& pages,
+    const torch::Tensor& cu, int64_t width);
+
 }  // namespace lightop::deep_gemm
