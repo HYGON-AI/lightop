@@ -12,6 +12,8 @@
 #include <cstdint>
 #include <cmath>
 #include <type_traits>
+#include <mutex>
+#include <unordered_map>
 
 #ifndef USE_ROCM
   #include <cub/cub.cuh>
@@ -28,28 +30,40 @@
 
 template<typename scalar_t>
 static __device__ inline float to_float(scalar_t in){
-  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
-    return in;
-  }
-  else{
+  if constexpr(std::is_same<scalar_t, uint16_t>::value ||
+               std::is_same<scalar_t, c10::BFloat16>::value){
+    // Load path: bitcast (shift) — matches prior peak bw path for bf16
     union{
         uint32_t int32;
         float    fp32;
-    } u = {uint32_t(in) << 16};
+    } u = {static_cast<uint32_t>(*reinterpret_cast<const uint16_t*>(&in)) << 16};
     return u.fp32;
+  } else if constexpr (std::is_same<scalar_t, c10::Half>::value ||
+                       std::is_same<scalar_t, __half>::value) {
+    return __half2float(*reinterpret_cast<const __half*>(&in));
+  } else {
+    return static_cast<float>(in);
   }
 }
 
 template<typename scalar_t>
 static __device__ inline void from_float(scalar_t &out ,float f){
-  if constexpr(!std::is_same<scalar_t, uint16_t>::value){
-    out=f;
-  }
-  else{
+  if constexpr(std::is_same<scalar_t, uint16_t>::value ||
+               std::is_same<scalar_t, c10::BFloat16>::value){
+#if defined(__gfx938__)
+    const short tmp = static_cast<short>(__builtin_hcu_cvt_bf16_f32(f, false, false));
+    out = *reinterpret_cast<const scalar_t*>(&tmp);
+#else
     uint32_t u = *(uint32_t*)(&f);
-    // u += 0x7fff + ((u >> 16) & 1);
     u += 0x8000;
-    out = u>>16;
+    uint16_t bits = u>>16;
+    out = *reinterpret_cast<scalar_t*>(&bits);
+#endif
+  } else if constexpr (std::is_same<scalar_t, c10::Half>::value ||
+                       std::is_same<scalar_t, __half>::value) {
+    *reinterpret_cast<__half*>(&out) = __float2half(f);
+  } else {
+    out=static_cast<scalar_t>(f);
   }
 }
 
@@ -611,42 +625,210 @@ __global__ void fused_rms_kernel_opt(scalar_t* input,scalar_t* output,scalar_t* 
   __shared__ T_ACC val_shared[share_size];
   __shared__ T_ACC s_rstd;
 
-  int i=blockIdx.x;
-  int j=threadIdx.x;
-  for(; i < num_tokens; i += gridDim.x){
+  const int tcol=cols/Vec;
+  using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
+
+  // Large-batch: one block may cover 2 rows when grid ~= rows/2.
+  for(int i=blockIdx.x; i < num_tokens; i += gridDim.x){
       T_ACC val=0;
-      int tcol=cols/Vec;
-      using LoadT = at::native::memory::aligned_vector<scalar_t, Vec>;
-      scalar_t intput_vec[Vec];
-      T_ACC trstd;
-      int64_t idx = i * tcol + j;
-      idx*=Vec;
-      if (j < tcol) {
-        *(LoadT*)intput_vec = *(LoadT*)(input+idx);
-        #pragma unroll
-        for (int ii = 0; ii < Vec; ii++) {
-          val += static_cast<T_ACC>(intput_vec[ii])*static_cast<T_ACC>(intput_vec[ii]);
-        }
-      }
-      val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
-      if (j == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
-      __syncthreads();
-      trstd=s_rstd;
-      if (j < tcol) {
-        #pragma unroll
-        for(int ii=0;ii<Vec;ii++){
-          int jj=j*Vec+ii;
-          T_ACC w_val = static_cast<T_ACC>(gamma[jj]);
-          if constexpr (IS_GEMMA) { w_val += 1.0f; }
-          T_ACC normalized = static_cast<T_ACC>(intput_vec[ii]) * trstd * w_val;
-          if constexpr (APPLY_CLAMP) {
-            normalized = clamp_with_limit(normalized, limit);
+      // Fast single-load path when one vector per thread covers the row.
+      if (tcol <= block_size) {
+        scalar_t intput_vec[Vec];
+        const int j = threadIdx.x;
+        if (j < tcol) {
+          const int64_t idx = (static_cast<int64_t>(i) * tcol + j) * Vec;
+          *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
+            const T_ACC x = static_cast<T_ACC>(to_float(intput_vec[ii]));
+            val += x * x;
           }
-          intput_vec[ii] = normalized;
         }
-        *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
+        val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
+        if (threadIdx.x == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
+        __syncthreads();
+        const T_ACC trstd=s_rstd;
+        if (j < tcol) {
+          const int64_t idx = (static_cast<int64_t>(i) * tcol + j) * Vec;
+          #pragma unroll
+          for(int ii=0;ii<Vec;ii++){
+            const int jj=j*Vec+ii;
+            T_ACC w_val = static_cast<T_ACC>(to_float(gamma[jj]));
+            if constexpr (IS_GEMMA) { w_val += 1.0f; }
+            T_ACC normalized = static_cast<T_ACC>(to_float(intput_vec[ii])) * trstd * w_val;
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_with_limit(normalized, limit);
+            }
+            from_float(intput_vec[ii], static_cast<float>(normalized));
+          }
+          *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
+        }
+      } else {
+        // Column-stride path for cols > block*Vec (up to 131K).
+        for (int j = threadIdx.x; j < tcol; j += block_size) {
+          scalar_t intput_vec[Vec];
+          const int64_t idx = (static_cast<int64_t>(i) * tcol + j) * Vec;
+          *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+          #pragma unroll
+          for (int ii = 0; ii < Vec; ii++) {
+            const T_ACC x = static_cast<T_ACC>(to_float(intput_vec[ii]));
+            val += x * x;
+          }
+        }
+        val = BlockReduceSum_NEW<T_ACC,block_size>(val,val_shared);
+        if (threadIdx.x == 0) s_rstd=c10::cuda::compat::rsqrt(val/cols + eps);
+        __syncthreads();
+        const T_ACC trstd=s_rstd;
+        for (int j = threadIdx.x; j < tcol; j += block_size) {
+          scalar_t intput_vec[Vec];
+          const int64_t idx = (static_cast<int64_t>(i) * tcol + j) * Vec;
+          *(LoadT*)intput_vec = *(LoadT*)(input+idx);
+          #pragma unroll
+          for(int ii=0;ii<Vec;ii++){
+            const int jj=j*Vec+ii;
+            T_ACC w_val = static_cast<T_ACC>(to_float(gamma[jj]));
+            if constexpr (IS_GEMMA) { w_val += 1.0f; }
+            T_ACC normalized = static_cast<T_ACC>(to_float(intput_vec[ii])) * trstd * w_val;
+            if constexpr (APPLY_CLAMP) {
+              normalized = clamp_with_limit(normalized, limit);
+            }
+            from_float(intput_vec[ii], static_cast<float>(normalized));
+          }
+          *(LoadT*)(output+idx)=*(LoadT*)intput_vec;
+        }
       }
   }
+}
+
+// Large-dim path: multi-block per row, keep tile in registers, one HBM read of X.
+// Aligned with softmax fused: BLOCK=256, VEC_NUM=8, fp32 Vec=4 / half Vec=8.
+template <typename scalar_t, typename T_ACC, int VEC_SIZE, int BLOCK_SIZE,
+          int VEC_NUM_PER_THREAD, bool IS_GEMMA=false, bool APPLY_CLAMP=false>
+__global__ void rms_fused_kernel_block_align(
+    scalar_t* __restrict__ output,
+    const scalar_t* __restrict__ input,
+    const scalar_t* __restrict__ gamma,
+    float* __restrict__ global_sum,
+    int* __restrict__ sync_counters,
+    int rows,
+    int cols,
+    int elem_per_block,
+    T_ACC eps,
+    T_ACC limit)
+{
+  using BlockReduce = hipcub::BlockReduce<float, BLOCK_SIZE>;
+  __shared__ typename BlockReduce::TempStorage temp_storage;
+  __shared__ float shared_rstd;
+
+  const int blocks_per_row = cols / elem_per_block;
+  const int bid = blockIdx.x;
+  const int row = bid / blocks_per_row;
+  const int block_idx_in_row = bid % blocks_per_row;
+  if (row >= rows) return;
+
+  using VecType = at::native::memory::aligned_vector<scalar_t, VEC_SIZE>;
+  const int block_offset = row * cols + block_idx_in_row * elem_per_block;
+  const VecType* vec_input = reinterpret_cast<const VecType*>(input + block_offset);
+  VecType* vec_output = reinterpret_cast<VecType*>(output + block_offset);
+  const VecType* vec_gamma = reinterpret_cast<const VecType*>(gamma + block_idx_in_row * elem_per_block);
+
+  // Perfect tile align: every thread owns VEC_NUM vectors (no predication)
+  VecType loaded_vecs[VEC_NUM_PER_THREAD];
+  #pragma unroll
+  for (int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
+    loaded_vecs[i] = vec_input[threadIdx.x + i * BLOCK_SIZE];
+  }
+
+  float local_sum = 0.0f;
+  #pragma unroll
+  for (int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
+    #pragma unroll
+    for (int k = 0; k < VEC_SIZE; ++k) {
+      const float x = to_float(loaded_vecs[i].val[k]);
+      local_sum += x * x;
+    }
+  }
+
+  float block_sum = BlockReduce(temp_storage).Sum(local_sum);
+  if (threadIdx.x == 0) {
+    atomicAdd(&global_sum[row], block_sum);
+    __threadfence();
+    atomicAdd(&sync_counters[row], 1);
+    while (atomicAdd(&sync_counters[row], 0) < blocks_per_row);
+    __threadfence();
+  }
+  __syncthreads();
+
+  if (threadIdx.x == 0) {
+    shared_rstd = rsqrtf(global_sum[row] / static_cast<float>(cols) + static_cast<float>(eps));
+  }
+  __syncthreads();
+  const float rstd = shared_rstd;
+
+  #pragma unroll
+  for (int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
+    VecType w_vec = vec_gamma[threadIdx.x + i * BLOCK_SIZE];
+    VecType out_vec;
+    #pragma unroll
+    for (int k = 0; k < VEC_SIZE; ++k) {
+      float w = to_float(w_vec.val[k]);
+      if constexpr (IS_GEMMA) { w += 1.0f; }
+      float normalized = to_float(loaded_vecs[i].val[k]) * rstd * w;
+      if constexpr (APPLY_CLAMP) {
+        normalized = clamp_with_limit(normalized, static_cast<float>(limit));
+      }
+      from_float(out_vec.val[k], normalized);
+    }
+    vec_output[threadIdx.x + i * BLOCK_SIZE] = out_vec;
+  }
+}
+
+
+template <typename scalar_t, typename T_ACC, bool IS_GEMMA, bool APPLY_CLAMP>
+static inline void launch_rms_fused_large(
+    scalar_t* input, scalar_t* output, scalar_t* gamma,
+    float* global_sum, int* sync_counters,
+    int rows, int cols, T_ACC eps, T_ACC limit, cudaStream_t stream)
+{
+  // Match notes / softmax: BLOCK=256, VEC_NUM=8, fp32 Vec=4→tile8192, half Vec=8→tile16384
+  constexpr int VEC_SIZE = (sizeof(scalar_t) == 4) ? 4 : 8;
+  constexpr int BLOCK_SIZE = 256;
+  constexpr int VEC_NUM_PER_THREAD = 8;
+  constexpr int elem_per_block = BLOCK_SIZE * VEC_SIZE * VEC_NUM_PER_THREAD;
+  const int blocks_per_row = cols / elem_per_block;
+  const int total_blocks = rows * blocks_per_row;
+
+  // rms_fused_kernel_block_align uses a non-cooperative cross-block spin-wait
+  // (atomicAdd poll on sync_counters) to synchronize all blocks of a row, which
+  // only terminates if every block in the launch can be resident simultaneously.
+  // Verify the grid fits in the device's resident-block capacity before launching;
+  // otherwise fail loudly instead of hanging forever.
+  int max_blocks_per_sm = 0;
+  cudaError_t occ_err = cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+      &max_blocks_per_sm,
+      rms_fused_kernel_block_align<
+          scalar_t, T_ACC, VEC_SIZE, BLOCK_SIZE, VEC_NUM_PER_THREAD, IS_GEMMA, APPLY_CLAMP>,
+      BLOCK_SIZE, 0);
+  TORCH_CHECK(occ_err == cudaSuccess, "fused_add_rms_norm: occupancy query failed: ",
+              cudaGetErrorString(occ_err));
+  int device = 0;
+  TORCH_CHECK(cudaGetDevice(&device) == cudaSuccess, "fused_add_rms_norm: cudaGetDevice failed");
+  cudaDeviceProp prop;
+  TORCH_CHECK(cudaGetDeviceProperties(&prop, device) == cudaSuccess,
+              "fused_add_rms_norm: cudaGetDeviceProperties failed");
+  const int max_resident_blocks = max_blocks_per_sm * prop.multiProcessorCount;
+  TORCH_CHECK(
+      total_blocks <= max_resident_blocks,
+      "fused_add_rms_norm: grid of ", total_blocks,
+      " blocks exceeds this device's resident-block capacity (", max_resident_blocks,
+      "); the large-dim fused kernel relies on a cross-block spin-wait that requires "
+      "all blocks of the launch to be co-resident, so a larger grid would hang. "
+      "Reduce the batch size or hidden_size for this call.");
+
+  rms_fused_kernel_block_align<
+      scalar_t, T_ACC, VEC_SIZE, BLOCK_SIZE, VEC_NUM_PER_THREAD, IS_GEMMA, APPLY_CLAMP>
+      <<<total_blocks, BLOCK_SIZE, 0, stream>>>(
+      output, input, gamma, global_sum, sync_counters, rows, cols, elem_per_block, eps, limit);
 }
 
 template <typename scalar_t, typename weight_t, typename T_ACC, int Vec=4, int block_size=512,
@@ -745,16 +927,62 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
       "limit must be -1 (disabled) or a finite non-negative value");
   int hidden_size = input.size(-1);
   int num_tokens = input.numel() / hidden_size;
+  // Large batch: one block handles two rows when possible.
   int grid = num_tokens;
+  if (num_tokens >= 2) grid = (num_tokens + 1) / 2;
   if(num_tokens == 288) grid = 256;
-  const at::cuda::OptionalCUDAGuard device_guard(device_of(input));
+  const at::cuda::OptionalCUDAGuard device_guard(input.device());
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
   auto inp_ptr = reinterpret_cast<std::uintptr_t>(input.data_ptr());
   auto out_ptr = reinterpret_cast<std::uintptr_t>(out.data_ptr());
   auto wt_ptr = reinterpret_cast<std::uintptr_t>(weight.data_ptr());
   bool ptrs_are_aligned =inp_ptr % 16 == 0  && wt_ptr % 16 == 0;
   bool small_ptrs_are_aligned = ptrs_are_aligned && out_ptr % 16 == 0;
-  if(hidden_size%16==0&&hidden_size<=16384&&ptrs_are_aligned){
+
+  // Large-dim fused (softmax-aligned): dim>=16K, tile-aligned
+  // fp32 tile 8192; half/bf16 tile 16384
+  const int epb = (input.element_size() == 4) ? 8192 : 16384;
+  if (ptrs_are_aligned && small_ptrs_are_aligned &&
+      hidden_size >= 16384 && hidden_size % epb == 0) {
+    // Per-call workspace from the PyTorch caching allocator (stream-ordered): the
+    // previous per-device static cache released its mutex before the async kernels
+    // ran, so two streams could memset and consume the same sums/sync buffers.
+    const size_t need_sum = (size_t)num_tokens * sizeof(float);
+    const size_t need_sync = (size_t)num_tokens * sizeof(int);
+    auto workspace = at::empty({static_cast<int64_t>(need_sum + need_sync)},
+                               input.options().dtype(at::kByte));
+    float* sum_ptr = reinterpret_cast<float*>(workspace.data_ptr());
+    int* sync_ptr = reinterpret_cast<int*>(sum_ptr + (size_t)num_tokens);
+    hipMemsetAsync(sum_ptr, 0, need_sum, stream);
+    hipMemsetAsync(sync_ptr, 0, need_sync, stream);
+
+    // bf16: dispatch as uint16_t like softmax (avoid c10::BFloat16 in hot kernel)
+    if (input.scalar_type() == at::ScalarType::BFloat16) {
+      launch_rms_fused_large<uint16_t, float, IS_GEMMA, APPLY_CLAMP>(
+          reinterpret_cast<uint16_t*>(input.expect_contiguous()->data_ptr()),
+          reinterpret_cast<uint16_t*>(out.expect_contiguous()->data_ptr()),
+          reinterpret_cast<uint16_t*>(weight.expect_contiguous()->data_ptr()),
+          sum_ptr, sync_ptr, num_tokens, hidden_size,
+          static_cast<float>(epsilon), static_cast<float>(limit), stream);
+    } else {
+      AT_DISPATCH_FLOATING_TYPES_AND(
+        at::ScalarType::Half,
+        input.scalar_type(),
+        "rms_fused_kernel_block_align",
+        [&] {
+          using T_ACC = at::acc_type<scalar_t, true>;
+          T_ACC eps = epsilon;
+          launch_rms_fused_large<scalar_t, T_ACC, IS_GEMMA, APPLY_CLAMP>(
+              input.expect_contiguous()->data_ptr<scalar_t>(),
+              out.expect_contiguous()->data_ptr<scalar_t>(),
+              weight.expect_contiguous()->data_ptr<scalar_t>(),
+              sum_ptr, sync_ptr, num_tokens, hidden_size, eps, static_cast<T_ACC>(limit), stream);
+        });
+    }
+    return;
+  }
+
+  if(hidden_size%16==0&&hidden_size<=131072&&ptrs_are_aligned){
   AT_DISPATCH_FLOATING_TYPES_AND2(
     at::ScalarType::Half,
     at::ScalarType::BFloat16,
@@ -776,6 +1004,7 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
         }
       }
 #endif
+      // Prefer Vec so tcol <= block_size (single HBM read of X into regs).
       if (hidden_size<=1024){
           fused_rms_kernel_opt<scalar_t,T_ACC,8,128, IS_GEMMA, APPLY_CLAMP><<<grid,  128, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
@@ -789,18 +1018,20 @@ void rms_norm_opt_impl(torch::Tensor& out,    // [..., hidden_size]
            fused_rms_kernel_opt<scalar_t,T_ACC,8,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
       else{
-          fused_rms_kernel_opt<scalar_t,T_ACC,16,1024, IS_GEMMA, APPLY_CLAMP><<<grid,  1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
+         // Column-strided fast path up to 131K (below fused threshold / unaligned).
+         constexpr int BIG_VEC = (sizeof(scalar_t) == 4) ? 4 : 16;
+         fused_rms_kernel_opt<scalar_t,T_ACC,BIG_VEC,1024, IS_GEMMA, APPLY_CLAMP><<<grid, 1024, 0, stream>>>(self_data,out_data,weight_data,hidden_size,eps,num_tokens,static_cast<T_ACC>(limit));
       }
     });
   }
   else{
-    dim3 grid(num_tokens);
-    dim3 block(std::min(hidden_size, 1024));
+    dim3 grid_dim(num_tokens);
+    dim3 block(::min(hidden_size, 1024));
 
     AT_DISPATCH_FLOATING_TYPES_AND2(
         at::ScalarType::Half,
         at::ScalarType::BFloat16,input.scalar_type(), "rms_norm_kernel", [&] {
-      vllm::rms_norm_kernel<scalar_t, IS_GEMMA, APPLY_CLAMP><<<grid, block, 0, stream>>>(
+      vllm::rms_norm_kernel<scalar_t, IS_GEMMA, APPLY_CLAMP><<<grid_dim, block, 0, stream>>>(
           out.data_ptr<scalar_t>(), input.data_ptr<scalar_t>(),
           weight.data_ptr<scalar_t>(), epsilon, num_tokens, hidden_size,
           static_cast<float>(limit));
