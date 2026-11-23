@@ -59,6 +59,30 @@ def test_scatter() -> None:
         ref = _reference(dst, index, src)
         _check(got, ref, dtype, f"large-dim dtype={dtype}")
 
+    # Row-uniform but non-contiguous index (stride(1) == 0).
+    #
+    # The host-side dispatch now derives the special path from the layout alone, and the
+    # special kernels are the only ones that read a single id per row (index[row*stride0]).
+    # Every case above builds its index with .contiguous(), i.e. stride(1) == 1, so those
+    # cases take the general element-wise path and would keep passing even if the special
+    # kernels were broken. Reusing the expanded index without .contiguous() is what
+    # actually exercises scatter_special_small_dim / scatter_special_large_dim: the general
+    # kernel indexes a densely packed array and would read the wrong ids here.
+    #   cols=1024, fp32  -> row_bytes == 4096  -> scatter_special_small_dim
+    #   cols=32768, fp32 -> row_bytes == 131072 -> scatter_special_large_dim
+    for cols, src_rows, dst_rows, tag in (
+        (1024, 24, 48, "small-dim"),
+        (32768, 4, 8, "large-dim"),
+    ):
+        src = torch.randn(src_rows, cols, device="cuda", dtype=torch.float32)
+        dst = torch.randn(dst_rows, cols, device="cuda", dtype=torch.float32)
+        row_ids = torch.randperm(dst_rows, device="cuda")[:src_rows]
+        index = row_ids.view(-1, 1).expand(src_rows, cols)  # stride(1) == 0, do not materialize
+        assert index.stride(1) == 0
+        got = scatter(dst.clone(), index, src)  # no special flag: the layout selects it
+        ref = _reference(dst, index, src)
+        _check(got, ref, torch.float32, f"row-uniform-noncontig {tag}")
+
     # Large-batch special dispatch.
     src = torch.randn(2049, 128, device="cuda", dtype=torch.float16)
     dst = torch.randn(2112, 128, device="cuda", dtype=torch.float16)
