@@ -55,3 +55,6 @@ for _name in ("fused_quantize_and_store_mla_kv_cache_dual", "main_kv_loc_to_comp
     if hasattr(_native, _name):
         globals()[_name] = getattr(_native, _name)
         __all__.append(_name)
+
+from .native import dsv4_gather_upconvert_compact_k_cache_paged
+__all__.append("dsv4_gather_upconvert_compact_k_cache_paged")
