@@ -232,7 +232,7 @@ torch::Tensor index_select_opt(
       src.scalar_type() == at::kHalf || src.scalar_type() == at::kBFloat16 ||
           src.scalar_type() == at::kFloat,
       "index_select_opt: float16/bfloat16/float32 only");
-  auto out = torch::empty({index.size(0)}, src.options()).view({index.size(0), src.size(1)});
+  auto out = torch::empty({index.size(0), src.size(1)}, src.options());
   index_select_opt_impl(src, index, out);
   return out;
 }
