@@ -49,6 +49,11 @@ y = lightop.norm.rms_norm(x, weight, 1e-6, out=torch.empty_like(x))
 print(y.shape)  # torch.Size([4, 4096])
 ```
 
+`lightop.norm.gated_rms_norm_per_token_fp8_quant` 对 GDN 输出按 128 维 value head
+做 RMSNorm 和 SiLU 门控，再按整个 token 做 E4M3FN 量化。入口接受 HCU BF16
+输入和二维或带 stride 的三维 gate，返回展平的 FP8 激活及每 token 的 FP32
+scale。门控输出先舍入为 BF16，全零 token 的 scale 为零。
+
 更多调用方式见 [test/](test/)。
 
 ## 测试
