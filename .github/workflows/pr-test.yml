@@ -12,6 +12,7 @@ on:
       - opened
       - synchronize
       - reopened
+      - labeled
 
 permissions:
   contents: read
@@ -28,6 +29,10 @@ env:
 jobs:
   build:
     name: build (dtk${{ matrix.dtk_version }}, torch${{ matrix.torch_version }})
+    # 只有打了 ready hcu 标签的 PR 才跑; 打其它标签或未加标签时不触发
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'ready hcu') &&
+      (github.event.action != 'labeled' || github.event.label.name == 'ready hcu')
     # 编译不占卡, 使用 hygon-build 池
     runs-on: hygon-build
     timeout-minutes: 180

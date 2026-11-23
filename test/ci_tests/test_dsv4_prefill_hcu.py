@@ -1,6 +1,6 @@
 # Copyright 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
-"""LightOp DSV4 Prefill parity tests and warmed, synchronized Triton comparison."""
+"""LightOp DSV4 Prefill parity, explicit RequestWindow/CP indices, synchronized benchmarks."""
 import argparse
 import json
 import os
@@ -57,14 +57,14 @@ def sglang_sparse_utils():
     return sparse_utils
 
 
-def combine_topk_swa_indices(topk_indices, query_start_loc, query_pos, seq_lens, gather_lens, compressed_base, swa_base, window_size, compress_ratio, topk, out_indices=None, out_lens=None):
+def combine_topk_swa_indices(topk_indices, query_start_loc, query_pos, seq_lens, gather_lens, compressed_base, swa_base, window_size, compress_ratio, topk, out_indices=None, out_lens=None, swa_indices=None, swa_lengths=None):
     rows = topk_indices.size(0)
     width = ((topk + window_size + 127) // 128) * 128
     if out_indices is None:
         out_indices = torch.full((rows, width), -1, dtype=torch.int32, device=topk_indices.device)
     if out_lens is None:
         out_lens = torch.empty(rows, dtype=torch.int32, device=topk_indices.device)
-    combine_topk_swa_indices_hcu(topk_indices, query_start_loc, query_pos, seq_lens, gather_lens, compressed_base, swa_base, out_indices, out_lens, window_size, compress_ratio, topk)
+    combine_topk_swa_indices_hcu(topk_indices, query_start_loc, query_pos, seq_lens, gather_lens, compressed_base, swa_base, out_indices, out_lens, window_size, compress_ratio, topk, swa_indices=swa_indices, swa_lengths=swa_lengths)
     return out_indices, out_lens
 
 
@@ -199,6 +199,8 @@ def _reference(
     window_size,
     compress_ratio,
     topk,
+    swa_indices=None,
+    swa_lengths=None,
 ):
     num_tokens = topk_indices.shape[0]
     width = -(-(topk + window_size) // TOPK_ALIGNMENT) * TOPK_ALIGNMENT
@@ -210,16 +212,24 @@ def _reference(
         gather_start = int(seq_lens[r]) - int(gather_lens[r])
         for token_idx in range(qsl[r] - base, qsl[r + 1] - base):
             pos = int(query_pos[token_idx])
+            if swa_indices is not None and pos < 0:
+                continue
             topk_len = min((pos + 1) // compress_ratio, topk)
-            swa_len = min(pos + 1, window_size)
+            swa_len = min(pos + 1, window_size) if swa_lengths is None else int(swa_lengths[token_idx])
             vals = topk_indices[token_idx, :topk_len]
             out[token_idx, :topk_len] = torch.where(
                 vals >= 0, vals + compressed_base[r], torch.full_like(vals, -1)
             )
-            window = torch.arange(swa_len, dtype=torch.int32, device=DEVICE)
-            out[token_idx, topk_len : topk_len + swa_len] = (
-                swa_base[r] + window + pos - swa_len + 1 - gather_start
-            )
+            if swa_indices is None:
+                window = torch.arange(swa_len, dtype=torch.int32, device=DEVICE)
+                out[token_idx, topk_len : topk_len + swa_len] = (
+                    swa_base[r] + window + pos - swa_len + 1 - gather_start
+                )
+            else:
+                raw = swa_indices[token_idx, :swa_len]
+                out[token_idx, topk_len : topk_len + swa_len] = torch.where(
+                    raw >= 0, raw + swa_base[r], torch.full_like(raw, -1)
+                )
             lens[token_idx] = topk_len + swa_len
     return out, lens
 
@@ -457,6 +467,127 @@ def dequant_case(n,p):
     out=torch.empty((n,1,512),device='cuda',dtype=torch.bfloat16)
     return cache,ids,out
 
+
+def _explicit_swa_case(rows=17, topk=16, ratio=4, window=128, stride=8):
+    """A global-window view with CP row strides and a request with no local Q."""
+    case = _trailing_case([300 + rows, 9, 1000 + rows], [rows // 2, 0, rows - rows // 2], topk, ratio)
+    case['window_size'] = window
+    # Global-workspace IDs intentionally differ from positional gather offsets.
+    storage = torch.arange(max(rows * stride, 1) * (window + 3), device=DEVICE, dtype=torch.int32).view(max(rows * stride, 1), window + 3)
+    indices = storage[:rows * stride:stride, :window]
+    if window:
+        indices[:, ::7] = -1
+    length_storage = torch.zeros(max(rows * stride, 1), device=DEVICE, dtype=torch.int32)
+    lengths = length_storage[:rows * stride:stride]
+    lengths.copy_(torch.arange(rows, device=DEVICE, dtype=torch.int32) % (window + 1))
+    case.update(swa_indices=indices, swa_lengths=lengths)
+    return case
+
+
+@pytest.mark.parametrize('rows', [0, 1, 3, 17, 127, 128, 129])
+@pytest.mark.parametrize('window, topk, ratio', [(0, 0, 1), (7, 4, 128), (128, 0, 1), (128, 16, 2), (128, 512, 4), (128, 2048, 128)])
+def test_explicit_swa_cp_strides_and_replay_floors(rows, window, topk, ratio):
+    case = _explicit_swa_case(rows, topk, ratio, window)
+    expected, ref_lens = _reference(**case)
+    snapshots = {key:value.clone() for key,value in case.items() if isinstance(value,torch.Tensor)}
+    width = expected.shape[1]
+    storage = torch.full((rows * 2 + 1, width + 7), -77, dtype=torch.int32, device=DEVICE)
+    out = storage[:rows * 2:2, :width]
+    lengths = torch.full((rows,), -77, dtype=torch.int32, device=DEVICE)
+    actual, actual_lens = combine_topk_swa_indices(**case, out_indices=out, out_lens=lengths)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_lens, ref_lens, rtol=0, atol=0)
+    assert actual.data_ptr() == out.data_ptr()
+    assert actual_lens.data_ptr() == lengths.data_ptr()
+    assert (storage[1::2] == -77).all()
+    assert (storage[:, width:] == -77).all()
+    for key,value in snapshots.items():
+        torch.testing.assert_close(case[key], value, rtol=0, atol=0)
+
+
+def test_explicit_swa_cp_dummy_rows_and_shared_read_views():
+    case = _explicit_swa_case(8)
+    case['query_start_loc'] = _i32([37, 40, 40, 43])  # final two rows are CP padding
+    case['query_pos'][2] = -1  # padding within a physical request segment
+    expected, ref_lens = _reference(**case)
+    actual, actual_lens = combine_topk_swa_indices(**case)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+    torch.testing.assert_close(actual_lens, ref_lens, rtol=0, atol=0)
+    assert actual_lens[2] == 0 and (actual[2] == -1).all()
+    assert (actual_lens[-2:] == 0).all() and (actual[-2:] == -1).all()
+    # Repeated read-only rows and a zero-stride length vector are legal.
+    case = _explicit_swa_case(5)
+    case['swa_indices'] = case['swa_indices'][:1].expand(5, -1)
+    case['swa_lengths'] = _i32([3]).expand(5)
+    _check(**case)
+
+
+@pytest.mark.parametrize('bad', ['indices_dtype', 'length_dtype', 'column_stride', 'indices_shape', 'length_shape', 'missing_indices', 'missing_lengths', 'input_alias', 'output_alias'])
+def test_explicit_swa_rejects_invalid_contract(bad):
+    case = _explicit_swa_case(4)
+    width = ((case['topk'] + case['window_size'] + 127) // 128) * 128
+    out = torch.empty((4, width), dtype=torch.int32, device=DEVICE)
+    lens = torch.empty(4, dtype=torch.int32, device=DEVICE)
+    if bad == 'indices_dtype': case['swa_indices'] = case['swa_indices'].long()
+    elif bad == 'length_dtype': case['swa_lengths'] = case['swa_lengths'].long()
+    elif bad == 'column_stride': case['swa_indices'] = torch.empty((4,256),dtype=torch.int32,device=DEVICE)[:,::2]
+    elif bad == 'indices_shape': case['swa_indices'] = case['swa_indices'][:3]
+    elif bad == 'length_shape': case['swa_lengths'] = case['swa_lengths'][:3]
+    elif bad == 'missing_indices': case['swa_indices'] = None
+    elif bad == 'missing_lengths': case['swa_lengths'] = None
+    elif bad == 'input_alias': case['swa_indices'] = out[:,:128]
+    elif bad == 'output_alias': lens = out.view(-1)[:4]
+    with pytest.raises(RuntimeError):
+        combine_topk_swa_indices(**case, out_indices=out, out_lens=lens)
+
+
+def test_explicit_swa_category_alias_current_stream_and_graph():
+    import lightop
+    from lightop.attention import COMBINE_TOPK_SWA_INDICES_ABI, combine_topk_swa_indices_hcu as categorized
+    assert categorized is lightop.combine_topk_swa_indices_hcu
+    assert COMBINE_TOPK_SWA_INDICES_ABI == 2
+    stream = torch.cuda.Stream()
+    with torch.cuda.stream(stream):
+        case = _explicit_swa_case(17)
+        expected, ref_lens = _reference(**case)
+        out = torch.full_like(expected, -77)
+        lens = torch.empty_like(ref_lens)
+        combine_topk_swa_indices(**case, out_indices=out, out_lens=lens)
+    stream.synchronize()
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph, stream=stream):
+        combine_topk_swa_indices(**case, out_indices=out, out_lens=lens)
+    out.fill_(-77)
+    stream.wait_stream(torch.cuda.current_stream())
+    graph.replay()
+    torch.cuda.synchronize()
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+    torch.testing.assert_close(lens, ref_lens, rtol=0, atol=0)
+
+
+
+def test_explicit_swa_native_keyword_arguments():
+    import lightop
+    case = _explicit_swa_case(3)
+    expected, ref_lens = _reference(**case)
+    out, lens = torch.full_like(expected, -77), torch.empty_like(ref_lens)
+    lightop.op.combine_topk_swa_indices_hcu(**case, out_indices=out, out_lens=lens)
+    torch.testing.assert_close(out, expected, rtol=0, atol=0)
+    torch.testing.assert_close(lens, ref_lens, rtol=0, atol=0)
+
+
+def test_explicit_swa_none_preserves_legacy_padding_contract():
+    case = _trailing_case([800], [3], topk=31, compress_ratio=4)
+    expected, ref_lens = _reference(**case)
+    out = torch.full_like(expected, -77)
+    lens = torch.empty_like(ref_lens)
+    combine_topk_swa_indices(**case, out_indices=out, out_lens=lens, swa_indices=None, swa_lengths=None)
+    scanned = torch.arange(out.shape[1], device=DEVICE)[None,:] < ref_lens[:,None]
+    torch.testing.assert_close(out[scanned], expected[scanned], rtol=0, atol=0)
+    assert (out[~scanned] == -77).all()
+    torch.testing.assert_close(lens, ref_lens, rtol=0, atol=0)
+
 def combine_case(n,k,ratio,reqs=1):
     per=n//reqs
     starts=torch.arange(reqs+1,device='cuda',dtype=torch.int32)*per+37
@@ -470,11 +601,17 @@ def combine_case(n,k,ratio,reqs=1):
     lens=torch.empty(n,device='cuda',dtype=torch.int32)
     return idx,starts,pos,seq,gather,base,swa,out,lens
 
-def combine_triton(case,k,ratio):
-    from sglang.kernels.ops.attention.dsv4.sparse_prefill_kernels import _combine_topk_swa_indices_kernel
+def combine_triton(case, k, ratio):
+    # Public adapter follows the installed SGLang kernel signature. This is an
+    # optional benchmark reference; core CI correctness uses _reference above.
+    from sglang.srt.layers.attention.dsv4 import sparse_prefill_utils as sparse
 
-    idx,starts,pos,seq,gather,base,swa,out,lens=case
-    _combine_topk_swa_indices_kernel[(seq.numel(),128)](out,out.stride(0),lens,idx,idx.stride(0),starts,pos,seq,gather,base,swa,top_k=k,COMPRESS_RATIO=ratio,WINDOW_SIZE=128,PADDED_TOP_K=triton.next_power_of_2(k))
+    idx, starts, pos, seq, gather, base, swa, out, lens = case
+    with patch.object(sparse, '_hcu_combine_topk_swa_indices', None):
+        return sparse.combine_topk_swa_indices(
+            idx, starts, pos, seq, gather, base, swa, 128, ratio, k,
+            out_indices=out, out_lens=lens,
+        )
 
 
 def paired_measure(reference, candidate):
@@ -612,17 +749,94 @@ def benchmark(tokens, profile_only=False):
     return results
 
 
+
+def benchmark_explicit_combine(tokens, profile_only=False):
+    """Explicit native vs correct Triton, including its CP-length copy adapter.
+
+    Run only after correctness with HIP_VISIBLE_DEVICES pinned to an idle card:
+      python test/ci_tests/test_dsv4_prefill_hcu.py --explicit-combine --benchmark-only --tokens 4096 8192
+    Kernel timings use preallocated outputs; Triton length adaptation is timed.
+    Logical bytes count outputs, valid index reads and unique row metadata;
+    they are algorithm bytes, not measured cache/HBM traffic.
+    """
+    from sglang.srt.layers.attention.dsv4 import sparse_prefill_utils as sparse
+
+    torch.manual_seed(42)
+    results = []
+    for n in tokens:
+        for k, ratio in [(0, 1), (512, 4), (1024, 128)]:
+            case = combine_case(n, k, ratio)
+            idx, starts, pos, seq, gather, base, swa, out, lens = case
+            per = n // seq.numel()
+            pos.copy_((torch.arange(per, device='cuda', dtype=torch.int32) * 8 + 131072 - per * 8).repeat(seq.numel()))
+            seq.fill_(131072)
+            gather.zero_()
+            storage = torch.arange(n * 8 * 128, device='cuda', dtype=torch.int32).view(n * 8, 128)
+            explicit = storage[::8]
+            explicit[:, ::19] = -1
+            length_storage = torch.full((n * 8,), 128, device='cuda', dtype=torch.int32)
+            lengths = length_storage[::8]
+            ref_out, ref_lens = torch.empty_like(out), torch.empty_like(lens)
+            original_native = sparse._hcu_combine_topk_swa_indices
+            sparse._hcu_combine_topk_swa_indices = None
+            try:
+                def reference():
+                    return sparse.combine_topk_swa_indices(
+                        idx, starts, pos, seq, gather, base, swa, 128, ratio, k,
+                        out_indices=ref_out, out_lens=ref_lens,
+                        swa_indices=explicit, swa_lengths=lengths.contiguous(),
+                    )
+
+                candidate = lambda: combine_topk_swa_indices_hcu(
+                    *case, 128, ratio, k, swa_indices=explicit, swa_lengths=lengths
+                )
+                # Full output oracle, independent of both kernels.
+                width = out.shape[1]
+                col = torch.arange(width, device='cuda')[None, :].expand(n, -1)
+                nc = ((pos + 1) // ratio).clamp(max=k)
+                req = torch.arange(n, device='cuda') // per
+                top = idx.gather(1, col.clamp(max=k - 1)) if k else torch.zeros_like(col, dtype=torch.int32)
+                sw = explicit.gather(1, (col - nc[:, None]).clamp(min=0, max=127))
+                expected = torch.where(
+                    col < nc[:, None], torch.where(top >= 0, top + base[req, None], -1),
+                    torch.where(col < nc[:, None] + 128, torch.where(sw >= 0, sw + swa[req, None], -1), -1),
+                ).to(torch.int32)
+                candidate()
+                torch.testing.assert_close(out, expected, rtol=0, atol=0)
+                torch.testing.assert_close(lens, nc + 128, rtol=0, atol=0)
+                _check_combine_outputs(reference, candidate, ref_out, ref_lens, out, lens)
+                if profile_only:
+                    for _ in range(10): candidate()
+                    torch.cuda.synchronize()
+                    continue
+                timings = paired_measure(reference, candidate)
+                valid_compressed = int(nc.sum())
+                traffic = 4 * (n * width + n * 3 + seq.numel() * 3 + 1 + valid_compressed + n * 128)
+                for item in timings.values():
+                    item['effective_GB_s'] = traffic / item['mean_us'] / 1000
+                row = dict(op='combine_explicit', N=n, topk=k, ratio=ratio, window=128, dtype='INT32',
+                           index_row_stride=explicit.stride(0), length_stride=lengths.stride(0),
+                           correct=True, logical_bytes=traffic, timings=timings,
+                           speedup=timings['triton']['mean_us'] / timings['lightop']['mean_us'])
+                results.append(row)
+                print(json.dumps(row), flush=True)
+            finally:
+                sparse._hcu_combine_topk_swa_indices = original_native
+    return results
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--skip-performance', action='store_true')
+    parser.add_argument('--explicit-combine', action='store_true')
+    parser.add_argument('--benchmark-only', action='store_true')
     parser.add_argument('--profile-only', action='store_true')
     parser.add_argument('--tokens', type=int, nargs='+', default=[4096, 8192, 16384, 32768, 65536])
     parser.add_argument('--output', default='dsv4_prefill_hcu_benchmark.json')
     args = parser.parse_args()
-    if not args.profile_only:
+    if not args.profile_only and not args.benchmark_only:
         code = pytest.main([__file__, '-q'])
         if code: raise SystemExit(code)
     if not args.skip_performance:
-        results = benchmark(args.tokens, args.profile_only)
+        results = (benchmark_explicit_combine if args.explicit_combine else benchmark)(args.tokens, args.profile_only)
         if not args.profile_only:
             Path(args.output).write_text(json.dumps({'test': __file__, 'reference': 'SGLang original Triton; Torch edge-case oracle', 'warmup': 10, 'timed_iterations': 100, 'rounds': 5, 'physical_card': os.getenv('HIP_VISIBLE_DEVICES'), 'torch': torch.__version__, 'hip': torch.version.hip, 'gfx': torch.cuda.get_device_properties(0).gcnArchName, 'results': results}, indent=2))
