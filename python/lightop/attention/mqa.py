@@ -766,3 +766,38 @@ def mqa_logits_topk_sampled_int8(
 
 
 __all__ = list(dict.fromkeys([*__all__, "mqa_logits_topk_sampled_int8"]))
+
+
+def paged_mqa_topk_sampled_int8(q, kv, weights, lengths, block_table,
+                               page_table_1, cu_seqlens_q, max_context_len,
+                               *, enabled=False):
+    if not enabled:
+        return None
+    rows = q.shape[0] if q.dim() == 4 else 0
+    if (not q.is_cuda or q.dtype != torch.int8 or not 0 < rows <= 288 or tuple(q.shape[1:]) != (1, 32, 128)
+            or not q.is_contiguous() or kv.dtype != torch.int8
+            or kv.dim() != 4 or tuple(kv.shape[1:]) != (64, 1, 132)
+            or not kv.is_contiguous() or weights.dtype != torch.float32
+            or tuple(weights.shape) != (rows, 32) or not weights.is_contiguous()
+            or lengths.dtype != torch.int32 or lengths.numel() != rows
+            or not lengths.is_contiguous() or block_table.dtype != torch.int32
+            or block_table.dim() != 2 or block_table.shape[0] != rows
+            or not block_table.is_contiguous() or page_table_1 is None
+            or page_table_1.dtype != torch.int32 or page_table_1.dim() != 2
+            or page_table_1.shape[0] != rows or not page_table_1.is_contiguous()
+            or cu_seqlens_q is None or cu_seqlens_q.dtype != torch.int32
+            or cu_seqlens_q.numel() != rows + 1 or not cu_seqlens_q.is_contiguous()
+            or not 262272 < max_context_len <= 1052672
+            or block_table.shape[1] * 64 < max_context_len
+            or not 0 < page_table_1.shape[1] <= max_context_len):
+        return None
+    from .. import op
+    if not hasattr(op, "paged_mqa_topk_sampled_int8"):
+        return None
+    properties = torch.cuda.get_device_properties(q.device)
+    if getattr(properties, "gcnArchName", "").split(":")[0] != "gfx936" or properties.multi_processor_count != 80:
+        return None
+    return op.paged_mqa_topk_sampled_int8(
+        q, kv, weights, lengths, block_table, page_table_1,
+        cu_seqlens_q, max_context_len,
+    )

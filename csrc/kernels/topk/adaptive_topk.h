@@ -109,12 +109,12 @@ __device__ __forceinline__ void histogram_add(int* hist, bool valid, int digit) 
 
 // Select one sample order statistic without sorting the other samples.
 // Keep ordered FP32 keys throughout, including signed zero and NaN payloads.
-template <int K>
-__device__ void sample_select(const uint32_t (&samples)[SampleItems],
+template <int K, int Items = SampleItems>
+__device__ void sample_select(const uint32_t (&samples)[Items],
                               int rank, Shared<K>& s) {
   const int tid = threadIdx.x;
   KeyRange local{UINT_MAX, 0};
-  for (int j = 0; j < SampleItems; ++j) {
+  for (int j = 0; j < Items; ++j) {
     local.low = ::min(local.low, samples[j]);
     local.high = ::max(local.high, samples[j]);
   }
@@ -137,7 +137,7 @@ __device__ void sample_select(const uint32_t (&samples)[SampleItems],
     if (tid < 256) s.hist[tid] = 0;
     __syncthreads();
     const uint32_t prefix = s.prefix, mask = s.mask;
-    for (int j = 0; j < SampleItems; ++j)
+    for (int j = 0; j < Items; ++j)
       histogram_add(s.hist, (samples[j] & mask) == prefix,
                     (samples[j] >> shift) & 255);
     __syncthreads();
@@ -162,7 +162,7 @@ __device__ void sample_select(const uint32_t (&samples)[SampleItems],
   }
   // If the whole boundary bucket is needed, its minimum is the exact pivot.
   local = {UINT_MAX, 0};
-  for (int j = 0; j < SampleItems; ++j)
+  for (int j = 0; j < Items; ++j)
     if ((samples[j] & s.mask) == s.prefix)
       local.low = ::min(local.low, samples[j]);
   const KeyRange boundary = RangeReduce(s.temp.range).Reduce(local, MergeRange{});
@@ -678,3 +678,8 @@ void adaptive_topk_kernel(const float* scores, int64_t score_stride, int width,
 }
 } // namespace native
 } // namespace at
+
+namespace at::native {
+void launch_paged_sample_proposal(const float*, const int*, int, uint32_t*, int*, int*, uint32_t*, int*, int, hipStream_t);
+void launch_paged_candidate_topk(const float*, int64_t, int, const int*, const float*, const int*, const int*, const int*, const int*, int64_t, int, const int*, int*, int*, int*, int, hipStream_t);
+}
