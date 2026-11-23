@@ -1,0 +1,93 @@
+"""Index / reduce helpers ported from custom_ops."""
+
+from __future__ import annotations
+
+import torch
+
+from . import op
+
+
+def reduce_max(x: torch.Tensor):
+    """Row-wise argmax for contiguous 2D CUDA tensors; else torch.max(dim=-1)."""
+    x = x.contiguous()
+    if x.is_cuda and x.dim() == 2 and x.dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    ):
+        return op.reduce_max_opt(x)
+    return torch.max(x, dim=-1)
+
+
+def reduce_max_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor):
+    x = x.contiguous()
+    return op.reduce_max_opt_out(x, values, indices)
+
+
+def reduce_min(x: torch.Tensor):
+    x = x.contiguous()
+    if x.is_cuda and x.dim() == 2 and x.dtype in (
+        torch.float16,
+        torch.bfloat16,
+        torch.float32,
+    ):
+        return op.reduce_min_opt(x)
+    return torch.min(x, dim=-1)
+
+
+def reduce_min_out(x: torch.Tensor, values: torch.Tensor, indices: torch.Tensor):
+    x = x.contiguous()
+    return op.reduce_min_opt_out(x, values, indices)
+
+
+def index_select(src: torch.Tensor, dim: int, index: torch.Tensor) -> torch.Tensor:
+    src = src.contiguous()
+    index = index.contiguous()
+    if (
+        src.is_cuda
+        and dim == 0
+        and src.dim() == 2
+        and index.dim() == 1
+        and src.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return op.index_select_opt(src, dim, index)
+    return torch.index_select(src, dim, index)
+
+
+def index_select_out(
+    src: torch.Tensor, dim: int, index: torch.Tensor, out: torch.Tensor
+) -> torch.Tensor:
+    return op.index_select_opt_out(src.contiguous(), dim, index.contiguous(), out)
+
+
+def index_add(
+    dst: torch.Tensor,
+    dim: int,
+    index: torch.Tensor,
+    src: torch.Tensor,
+    assume_unique: bool = False,
+) -> torch.Tensor:
+    dst = dst.contiguous()
+    src = src.contiguous()
+    index = index.contiguous()
+    if (
+        dst.is_cuda
+        and dim == 0
+        and dst.dim() == 2
+        and src.dim() == 2
+        and dst.dtype in (torch.float16, torch.bfloat16, torch.float32)
+    ):
+        return op.index_add_opt(dst, dim, index, src, assume_unique)
+    return dst.index_add(dim, index, src)
+
+
+def index_add_out(
+    dst: torch.Tensor,
+    dim: int,
+    index: torch.Tensor,
+    src: torch.Tensor,
+    assume_unique: bool = False,
+) -> torch.Tensor:
+    return op.index_add_opt_out(
+        dst, dim, index.contiguous(), src.contiguous(), assume_unique
+    )
