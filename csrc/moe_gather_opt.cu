@@ -585,13 +585,17 @@ void moe_gather_fill_inv_perm_from_sorted_kernel(
     const int* __restrict__ sorted_row,
     int* __restrict__ inv_perm,
     int topk,
-    int n) {
+    int n,
+    int n_tokens) {
     const int i = blockIdx.x * blockDim.x + threadIdx.x;
     if (i >= n) {
         return;
     }
     const int tok = sorted_token[i];
     const int row = sorted_row[i];
+    if (tok < 0 || tok >= n_tokens) {
+        return;
+    }
     const int k = i - moe_gather_segment_start(sorted_token, i);
     if (k < topk) {
         inv_perm[tok * topk + k] = row;
@@ -863,7 +867,6 @@ static void moe_gather_build_inv_perm_on_device(
     torch::Tensor& inv_perm,
     int64_t num_tokens,
     int64_t topk) {
-    (void)num_tokens;
     const int64_t dispatch_tokens = scatter_token_id.size(0);
     auto opts_i64 = scatter_token_id.options().dtype(torch::kInt64);
     auto row_idx = torch::arange(dispatch_tokens, opts_i64);
@@ -881,7 +884,8 @@ static void moe_gather_build_inv_perm_on_device(
         sorted_row.data_ptr<int>(),
         inv_perm.data_ptr<int>(),
         static_cast<int>(topk),
-        static_cast<int>(dispatch_tokens));;
+        static_cast<int>(dispatch_tokens),
+        static_cast<int>(num_tokens));
     CUDA_CHECK(cudaGetLastError());
 }
 
@@ -1167,9 +1171,12 @@ __device__ __forceinline__ void moe_gather_v2_ep_process_row(
     float weight,
     int num_tokens,
     int hidden_size) {
-    // if (token_id < 0 || token_id >= num_tokens) {
-    //     return;
-    // }
+    // Dropped / padding tokens carry token_id == -1 (and a stale id can exceed
+    // num_tokens), so the row must be validated before it becomes a row offset:
+    // writing convergent + token_id*hidden_size out of range corrupts memory.
+    if (token_id < 0 || token_id >= num_tokens) {
+        return;
+    }
     bfloat16* dst_row = convergent + static_cast<int64_t>(token_id) * hidden_size;
     moe_gather_v2_ep_row_assign(dst_row, src_row, weight, hidden_size);
 }
@@ -1445,12 +1452,18 @@ __global__ void moe_gather_v2_build_inv_perm_seq_kernel(
     int* __restrict__ inv_perm,
     int* __restrict__ slot,
     int dispatch_tokens,
-    int topk) {
+    int topk,
+    int num_tokens) {
     if (blockIdx.x != 0 || threadIdx.x != 0) {
         return;
     }
     for (int row = 0; row < dispatch_tokens; ++row) {
         const int tok = scatter_token_id[row];
+        // Same contract as the python fallback (expert_parallel.py): dropped
+        // tokens are skipped instead of indexing slot/inv_perm out of bounds.
+        if (tok < 0 || tok >= num_tokens) {
+            continue;
+        }
         const int k = slot[tok];
         if (k < topk) {
             inv_perm[tok * topk + k] = row;
@@ -1504,7 +1517,8 @@ static void moe_gather_v2_build_inv_perm_on_device(
         inv_perm.data_ptr<int>(),
         slot.data_ptr<int>(),
         static_cast<int>(scatter_token_id.size(0)),
-        static_cast<int>(topk));
+        static_cast<int>(topk),
+        static_cast<int>(num_tokens));
     CUDA_CHECK(cudaGetLastError());
 }
 

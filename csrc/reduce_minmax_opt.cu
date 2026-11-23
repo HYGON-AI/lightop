@@ -292,6 +292,15 @@ static void reduce_minmax_opt_impl(
 
     // Launch on the input's device and stream: without the guard a call on a
     // non-current device would queue the kernel on the wrong stream.
+    // torch.max/min over an empty reduction dim raises; mirror that instead of
+    // writing +-inf for zero rows/cols, and skip the launch for an empty batch
+    // (a zero-block grid is an invalid configuration).
+    TORCH_CHECK(N > 0, "custom_ops: reduction dim must be non-zero");
+    if (M == 0)
+    {
+        return;
+    }
+
     const at::cuda::OptionalCUDAGuard device_guard(input.device());
     cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
@@ -359,7 +368,8 @@ static void reduce_minmax_opt_impl(
     if (const char* env = std::getenv("REDUCEMINMAX_BLOCK_SIZE"))
     {
         int bs = std::atoi(env);
-        if (bs == 64 || bs == 128 || bs == 256 || bs == 512 || bs == 1024)
+        // 1024 exceeds __launch_bounds__(512, 2) and would fail to launch.
+        if (bs == 64 || bs == 128 || bs == 256 || bs == 512)
             block_size = bs;
     }
     launch_kernel(block_size);
