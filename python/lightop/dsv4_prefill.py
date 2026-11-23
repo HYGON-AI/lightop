@@ -6,6 +6,8 @@ import torch
 
 from . import op
 
+COMBINE_TOPK_SWA_INDICES_ABI = getattr(op, "COMBINE_TOPK_SWA_INDICES_ABI", 1)
+
 
 def dsv41_pool_pairs_norm(previous, current, previous_score, score, weight, eps):
     """Pair softmax pooling, BF16 rounding and FP32 RMSNorm for CP Prefill.
@@ -67,15 +69,35 @@ def combine_topk_swa_indices_hcu(
     window_size: int,
     compress_ratio: int,
     topk: int,
+    swa_indices: torch.Tensor | None = None,
+    swa_lengths: torch.Tensor | None = None,
 ) -> None:
-    """Rebase selected TopK indices and append the causal positional SWA.
+    """Rebase selected TopK indices and append positional or explicit SWA.
 
     All tensors are device INT32. Request starts must be nondecreasing,
     cover every output row and may include a cross-chunk offset. Query
     positions are absolute. Negative TopK entries remain -1. Only the
     scanned prefix is written; initialize unused output padding to -1.
     Out lengths count the prefix including holes, as in the Triton path.
+
+    Optional ``swa_indices`` INT32 [rows, window_size] and ``swa_lengths``
+    INT32 [rows] must be supplied together. Indices are relative to each
+    request's ``swa_base``; lengths must be in [0, window_size]. Row strides
+    (including CP-interleaved views) are supported; columns must be contiguous.
+    Explicit mode preserves negative holes, writes all output padding to -1,
+    and emits empty rows for negative query positions or rows past request end.
+    Explicit outputs cannot alias inputs. No host readback or copies occur.
+    Omitting the pair retains the legacy scanned-prefix-write behavior.
     """
+    if swa_indices is not None or swa_lengths is not None:
+        if COMBINE_TOPK_SWA_INDICES_ABI < 2:
+            raise RuntimeError("Explicit SWA requires a rebuilt LightOp native extension")
+        op.combine_topk_swa_indices_hcu(
+            topk_indices, query_start_loc, query_pos, seq_lens, gather_lens,
+            compressed_base, swa_base, out_indices, out_lens,
+            window_size, compress_ratio, topk, swa_indices, swa_lengths,
+        )
+        return
     op.combine_topk_swa_indices_hcu(
         topk_indices, query_start_loc, query_pos, seq_lens, gather_lens,
         compressed_base, swa_base, out_indices, out_lens,

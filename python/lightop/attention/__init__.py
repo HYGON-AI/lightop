@@ -9,7 +9,11 @@ PAGED_MQA_LOGITS_FP4_ABI = 3
 
 from ..minimax_qk_norm_rope import minimax_qk_norm_rope, supports_minimax_qk_norm_rope
 
-from ..dsv4_prefill import dsv41_rope_fake_quant_store
+from ..dsv4_prefill import (
+    COMBINE_TOPK_SWA_INDICES_ABI,
+    combine_topk_swa_indices_hcu,
+    dsv41_rope_fake_quant_store,
+)
 from .mhc import mhc_repeat_cp_sglang, supports_mhc_repeat_cp_sglang
 from .mqa import (
     fp8_fp4_paged_sparse_mqa_logits,
@@ -75,6 +79,8 @@ from .rope import (
 )
 
 __all__ = [
+    "COMBINE_TOPK_SWA_INDICES_ABI",
+    "combine_topk_swa_indices_hcu",
     "minimax_qk_norm_rope",
     "supports_minimax_qk_norm_rope",
     "fp8_fp4_paged_sparse_mqa_logits",

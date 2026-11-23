@@ -839,7 +839,8 @@ void combine_topk_swa_indices_hcu(
     const Tensor& query_pos, const Tensor& seq_lens, const Tensor& gather_lens,
     const Tensor& compressed_base, const Tensor& swa_base,
     Tensor& out_indices, Tensor& out_lens,
-    int64_t window_size, int64_t compress_ratio, int64_t topk);
+    int64_t window_size, int64_t compress_ratio, int64_t topk,
+    const std::optional<Tensor>& swa_indices, const std::optional<Tensor>& swa_lengths);
 std::vector<torch::Tensor> dsv4_pack_c4_topk_workspace(
     const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
     int64_t, int64_t);
@@ -1910,8 +1911,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
        "Dequantize the GPU-counted valid KV prefix into preallocated BF16 output",
        py::arg("cache"), py::arg("token_ids"), py::arg("out"),
        py::arg("page_size"), py::arg("fp8_fnuz"), py::arg("valid_count"));
+ m.attr("COMBINE_TOPK_SWA_INDICES_ABI") = py::int_(2);
  m.def("combine_topk_swa_indices_hcu", &at::native::combine_topk_swa_indices_hcu,
-       "Combine compressed TopK and positional SWA indices into a flat workspace");
+       "Combine compressed TopK and positional or explicit SWA into a flat workspace",
+       py::arg("topk_indices"), py::arg("query_start_loc"), py::arg("query_pos"),
+       py::arg("seq_lens"), py::arg("gather_lens"), py::arg("compressed_base"),
+       py::arg("swa_base"), py::arg("out_indices"), py::arg("out_lens"),
+       py::arg("window_size"), py::arg("compress_ratio"), py::arg("topk"),
+       py::arg("swa_indices") = py::none(), py::arg("swa_lengths") = py::none());
  m.def("dsv4_pack_c4_topk_workspace",
       &at::native::dsv4_pack_c4_topk_workspace,
       "Pack a DSV4 C4 TopK union and remap query indices on GPU",
