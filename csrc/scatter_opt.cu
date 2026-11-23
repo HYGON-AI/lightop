@@ -162,11 +162,18 @@ void scatter_launch(
     const int64_t total = src_rows * cols;
     if (total == 0) return;
 
+    // The kernel runs on the current device's stream, so make that the tensors' device.
+    const at::cuda::OptionalCUDAGuard device_guard(dst.device());
     auto stream = at::cuda::getCurrentCUDAStream();
     constexpr int BLOCK = 256;
 
+    // The special kernels read a single index per row (index[row * stride0]), which is
+    // only correct when every row carries one id (stride(1) == 0). Requiring the layout
+    // instead of trusting the `special` flag keeps an explicit special=true on a
+    // per-element index array from silently copying the wrong source rows.
     const bool is_row_uniform = (index.dim() == 2 && index.stride(1) == 0);
-    const bool use_special = special || is_row_uniform;
+    const bool use_special = is_row_uniform;
+    (void)special;  // kept in the signature for API compatibility; see above
 
     if (use_special) {
         const int64_t idx_stride0 = index.stride(0);
@@ -214,6 +221,10 @@ torch::Tensor scatter_opt(
     torch::Tensor& src,
     bool special) {
     TORCH_CHECK(dst.is_cuda() && index.is_cuda() && src.is_cuda(), "Must be HIP tensors");
+    TORCH_CHECK(dst.device() == src.device() && index.device() == dst.device(),
+                "dst/src/index must live on the same device");
+    TORCH_CHECK(dst.is_contiguous() && src.is_contiguous(),
+                "dst and src must be contiguous");
     TORCH_CHECK(dst.dim() == 2 && src.dim() == 2, "dst and src must be 2D");
     TORCH_CHECK(index.dim() == 2, "index must be 2D");
     TORCH_CHECK(dst.size(1) == src.size(1), "Column count mismatch");
