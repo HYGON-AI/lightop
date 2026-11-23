@@ -3,6 +3,7 @@
 
 """Correctness and performance test for ``rms_norm_opt``."""
 
+import pytest
 import torch
 
 from lightop import op
@@ -126,6 +127,35 @@ def benchmark_us(fn, timed_iters: int = TIMED_ITERS) -> float:
     end.record()
     torch.cuda.synchronize()
     return start.elapsed_time(end) * 1000.0 / timed_iters
+
+
+# --- pytest entry points ---------------------------------------------------
+# CI runs this file from test/ci_tests via pytest. timed_iters=0 keeps these
+# cases correctness-only; the timing sweep in main() is unchanged.
+CI_SHAPES = (
+    (5, 512),
+    (7, 100),
+    (17, 1000),
+    (33, 2047),
+    (1024, 16384),
+    (3, 16385),
+)
+
+
+@pytest.mark.parametrize("num_tokens,hidden_size", CI_SHAPES)
+@pytest.mark.parametrize("dtype,rtol,atol", TEST_DTYPES)
+def test_rms_norm_opt(
+    num_tokens: int, hidden_size: int, dtype: torch.dtype, rtol: float, atol: float
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
+    # run_case() itself asserts against the torch reference; keep the
+    # returned max-abs error only for the failure message.
+    result = run_case(num_tokens, hidden_size, dtype, rtol, atol, 0)
+    assert result["max_abs_error"] < float("inf"), (
+        f"rms_norm_opt [{num_tokens}, {hidden_size}] dtype={dtype} "
+        f"max_abs={result['max_abs_error']:.4e}"
+    )
 
 
 def main() -> None:

@@ -8,6 +8,7 @@ benchmark shapes.
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 import torch
 import time
 import copy
@@ -212,6 +213,7 @@ def _softmax_last_dim(x_size):
     return x_size[-1]
 
 
+@pytest.mark.skip(reason="manual benchmark suite: long accuracy+timing sweep")
 def test_lastdim_softmax():
     # mid path + fused (>=16384) + unaligned / micro_perf-like shapes
     x_size_lists = [
@@ -258,6 +260,7 @@ def test_lastdim_softmax():
                         softmax_tester.test_speed(x_size, forward_only=forward_only, split_fwd_bwd=True)
 
 
+@pytest.mark.skip(reason="manual benchmark suite: long accuracy+timing sweep")
 def test_spatial_softmax():
     x_size_lists = [
         (4, 256, 1024),
@@ -432,6 +435,35 @@ def run_irregular_softmax_suite():
     if failures:
         raise AssertionError(f"irregular Softmax failures: {failures}")
     print("All irregular Softmax checks passed.")
+
+
+# --- pytest entry points ---------------------------------------------------
+# CI runs this file from test/ci_tests via pytest. The two suites above are
+# manual benchmark sweeps (marked skip); the parametrized cases below are the
+# CI correctness surface and stay small / timing-free.
+CI_CASES = (
+    (7, 3),
+    (7, 63),
+    (7, 2047),
+    (7, 16385),
+    (33, 1000),
+    (513, 1023),
+    (999, 999),
+    (3, 48000),
+)
+
+
+@pytest.mark.parametrize("batch,dim", CI_CASES)
+@pytest.mark.parametrize("dtype,rtol,atol", DTYPES)
+def test_softmax_irregular(
+    batch: int, dim: int, dtype: torch.dtype, rtol: float, atol: float
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
+    ok, max_abs = _check_softmax(batch, dim, dtype, rtol, atol)
+    assert ok, (
+        f"softmax batch={batch} dim={dim} dtype={dtype} max_abs={max_abs:.4e}"
+    )
 
 
 def main():

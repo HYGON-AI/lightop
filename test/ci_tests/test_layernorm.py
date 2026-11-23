@@ -9,6 +9,7 @@ benchmark shapes.
 
 import time
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -325,6 +326,35 @@ def run_irregular_layernorm_suite():
     if failures:
         raise AssertionError(f"irregular LayerNorm failures: {failures}")
     print("All irregular LayerNorm checks passed.")
+
+
+# --- pytest entry points ---------------------------------------------------
+# CI runs this file from test/ci_tests via pytest. Keep the parametrized set
+# small (correctness only, no timing) so the pr-test job stays short; the
+# benchmark sweep in main() is unchanged and is meant to be run manually.
+CI_CASES = (
+    (7, 127),
+    (7, 2047),
+    (7, 16385),
+    (33, 1000),
+    (65, 100),
+    (513, 1023),
+    (999, 999),
+    (3, 48000),
+)
+
+
+@pytest.mark.parametrize("batch,dim", CI_CASES)
+@pytest.mark.parametrize("dtype,rtol,atol", DTYPES)
+def test_layernorm_irregular(
+    batch: int, dim: int, dtype: torch.dtype, rtol: float, atol: float
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
+    ok, max_abs = _check_layernorm(batch, dim, dtype, rtol, atol)
+    assert ok, (
+        f"layer_norm batch={batch} dim={dim} dtype={dtype} max_abs={max_abs:.4e}"
+    )
 
 
 def main():

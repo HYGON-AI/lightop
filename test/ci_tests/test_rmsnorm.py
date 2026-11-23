@@ -3,6 +3,7 @@
 
 """RMSNorm benchmark and irregular-shape correctness tests."""
 
+import pytest
 import torch
 import torch.nn as nn
 import time
@@ -79,6 +80,7 @@ def get_model(cols=128,use_half=False):
     return torch_rmsnorm,fuse_rmsnorm
 
 
+@pytest.mark.skip(reason="manual benchmark: writes chrome traces")
 def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
     
     x1,x2,grad=get_data(batchsize, seqs, cols,use_half=use_half)
@@ -100,6 +102,7 @@ def test_profile(batchsize, seqs, cols,repeat_num,use_half=False):
             torch.cuda.synchronize()
     prof2.export_chrome_trace('./profile_fuse_rmsnorm.json')  
 
+@pytest.mark.skip(reason="manual benchmark")
 def test_speed(batchsize, seqs, cols,repeat_num,use_half=False):
     if use_half:
         print(f"---------------fp16, batchsize={batchsize},seqs={seqs}, cols={cols}---------------------")
@@ -307,6 +310,35 @@ def run_irregular_rmsnorm_suite():
     if failures:
         raise AssertionError(f"irregular RMSNorm failures: {failures}")
     print("All irregular RMSNorm checks passed.")
+
+
+# --- pytest entry points ---------------------------------------------------
+# CI runs this file from test/ci_tests via pytest. The parametrized set below
+# stays small (correctness only, no timing); the benchmark sweep in main() is
+# unchanged and is meant to be run manually.
+CI_CASES = (
+    (7, 3),
+    (33, 63),
+    (7, 127),
+    (7, 2047),
+    (7, 16385),
+    (33, 1000),
+    (999, 999),
+    (3, 48000),
+)
+
+
+@pytest.mark.parametrize("batch,dim", CI_CASES)
+@pytest.mark.parametrize("dtype,rtol,atol", RMS_IRREGULAR_DTYPES)
+def test_rmsnorm_irregular(
+    batch: int, dim: int, dtype: torch.dtype, rtol: float, atol: float
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
+    ok, max_abs = _check_rmsnorm(batch, dim, dtype, rtol, atol)
+    assert ok, (
+        f"rms_norm batch={batch} dim={dim} dtype={dtype} max_abs={max_abs:.4e}"
+    )
 
 
 def main():
