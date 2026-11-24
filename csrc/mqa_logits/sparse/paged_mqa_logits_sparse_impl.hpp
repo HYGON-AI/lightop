@@ -4,9 +4,255 @@
 #pragma once
 
 #include "../paged/paged_mqa_logits_impl.hpp"
+#include "../paged/paged_mqa_logits_fp8_impl.hpp"
+
+#include <algorithm>
 
 namespace lightop {
 namespace deep_gemm {
+
+#if defined(__gfx938__)
+__device__ __forceinline__ void v1_wait_vm() {
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_waitcnt vmcnt(0)" ::: "memory");
+    __builtin_amdgcn_sched_barrier(0);
+}
+__device__ __forceinline__ void v1_wait_lds() {
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
+    __builtin_amdgcn_sched_barrier(0);
+}
+__device__ __forceinline__ void v1_mmac_boundary() {
+    __builtin_amdgcn_sched_barrier(0);
+    asm volatile("s_nop 0" ::: "memory");
+    __builtin_amdgcn_sched_barrier(0);
+}
+__device__ __forceinline__ float v1_relu(float x) {
+    float v;
+    asm("v_max3_f32 %0, %1, %1, 0" : "=v"(v) : "v"(x));
+    return v;
+}
+
+using v1_fp32x2 = float __attribute__((ext_vector_type(2)));
+
+__device__ __forceinline__ void v1_load_k(const uint8_t* page, int row, int lane, uint8_t* dst) {
+    uintptr_t address = reinterpret_cast<uintptr_t>(page);
+    v4i desc = {int(__builtin_amdgcn_readfirstlane(uint32_t(address))),
+                int(__builtin_amdgcn_readfirstlane(uint32_t(address >> 32))),
+                -2,
+                0x20000};
+    int col = (lane % 8) ^ (lane / 8);
+#pragma unroll
+    for (int it = 0; it < 2; it++) {
+        auto* p = dst + it * 1024;
+        __builtin_amdgcn_raw_buffer_load_lds(
+            desc, *(__attribute__((address_space(3))) int**)(&p), 16,
+            (lane / 8) * 128 + col * 16, (row + it * 8) * 128, 0, 0);
+    }
+    __builtin_amdgcn_sched_barrier(0);
+}
+__device__ __forceinline__ float v1_xor_head_sum(float x, int lane, int mask) {
+    return __uint_as_float(__builtin_amdgcn_ds_bpermute((lane ^ mask) * 4, __float_as_uint(x)));
+}
+#endif
+
+template <int kGroupedRows>
+__attribute__((amdgpu_flat_work_group_size(64, 64)))
+__global__ void paged_mqa_logits_v1_fp8_kernel(
+    const uint8_t* q,
+    const uint8_t* kv_block,
+    uint64_t kv_stride,
+    const float* weights,
+    uint64_t logits_stride,
+    uint64_t table_stride,
+    const int* lens,
+    float* logits,
+    const int* table,
+    int16_t* masks,
+    int persistent) {
+#if defined(__gfx938__)
+    static_assert(kGroupedRows == 1 || (kGroupedRows >= 3 && kGroupedRows <= 6));
+    constexpr int Rows = 2, Groups = (kGroupedRows + Rows - 1) / Rows;
+    int lane = threadIdx.x, req = blockIdx.x / (persistent * Groups), local = blockIdx.x % (persistent * Groups);
+    int group = local % Groups;
+    int first = req * kGroupedRows + group * Rows, seed = local / Groups;
+    int lengths[Rows], max_len = 0;
+#pragma unroll
+    for (int r = 0; r < Rows; r++) {
+        lengths[r] = group * Rows + r < kGroupedRows
+            ? max(0, min(int(logits_stride), lens[first + r])) : 0;
+        max_len = max(max_len, lengths[r]);
+    }
+    max_len = __builtin_amdgcn_readfirstlane(max_len);
+    if (seed * 64 >= max_len) return;
+    __shared__ __align__(1024) uint8_t sk[2048];
+    f8x16_t rq[Rows][2][2] = {};
+    float rw[Rows][8] = {};
+#pragma unroll
+    for (int r = 0; r < Rows; r++) {
+        if (group * Rows + r >= kGroupedRows) continue;
+#pragma unroll
+        for (int h = 0; h < 2; h++) {
+#pragma unroll
+            for (int d = 0; d < 2; d++)
+                rq[r][h][d] = *reinterpret_cast<const f8x16_t*>(q + uint64_t(first + r) * 4096 +
+                                                                (lane % 16 + h * 16) * 128 + (lane / 16) * 16 + d * 64);
+#pragma unroll
+            for (int c = 0; c < 4; c++) rw[r][h * 4 + c] = weights[(first + r) * 32 + h * 16 + c * 4 + lane / 16];
+        }
+    }
+    const uint64_t table_base = uint64_t(req * kGroupedRows) * table_stride;
+    int physical = __builtin_amdgcn_readfirstlane(table[table_base + seed]);
+    const uint8_t* page = kv_block + uint64_t(physical) * kv_stride;
+    float scale = reinterpret_cast<const float*>(page + 8192)[lane];
+    v1_wait_vm();
+    v1_load_k(page, 0, lane, sk);
+    const uint64_t mask_stride = (logits_stride + 15) / 16;
+    for (int pg = seed; pg * 64 < max_len; pg += persistent) {
+        int next_pg = pg + persistent;
+        bool has_next = next_pg * 64 < max_len;
+        int next_physical = 0;
+        if (has_next) next_physical = table[table_base + next_pg];
+        const uint8_t* next_page = nullptr;
+        float next_scale = 0.f;
+        float page_sums[Rows][4];
+#pragma unroll
+        for (int i = 0; i < 4; i++) {
+            v1_wait_vm();
+            f8x16_t rk[2];
+#pragma unroll
+            for (int d = 0; d < 2; d++)
+                rk[d] = *reinterpret_cast<const f8x16_t*>(sk + (lane % 16) * 128 +
+                                                          (((lane / 16 + d * 4) ^ ((lane % 16) & 7)) * 16));
+            v1_wait_lds();
+            if (i < 3) v1_load_k(page, (i + 1) * 16, lane, sk);
+            if (i == 1 && has_next) {
+                next_physical = __builtin_amdgcn_readfirstlane(next_physical);
+                next_page = kv_block + uint64_t(next_physical) * kv_stride;
+                next_scale = reinterpret_cast<const float*>(next_page + 8192)[lane];
+            }
+            if (i == 3 && has_next) v1_load_k(next_page, 0, lane, sk);
+            fp32x4 acc[Rows][2] = {};
+#pragma unroll
+            for (int d = 0; d < 2; d++) {
+#pragma unroll
+                for (int r = 0; r < Rows; r++) {
+#pragma unroll
+                    for (int h = 0; h < 2; h++) {
+                        builtin_fp8_mmac(rk[d].front, rq[r][h][d].front, acc[r][h]);
+                        builtin_fp8_mmac(rk[d].rear, rq[r][h][d].rear, acc[r][h]);
+                    }
+                }
+            }
+            v1_mmac_boundary();
+            v1_fp32x2 pair_sum = {0.f, 0.f};
+#pragma unroll
+            for (int h = 0; h < 2; h++) {
+#pragma unroll
+                for (int c = 0; c < 4; c++) {
+                    v1_fp32x2 values = {v1_relu(acc[0][h][c]), v1_relu(acc[1][h][c])};
+                    v1_fp32x2 weight = {rw[0][h * 4 + c], rw[1][h * 4 + c]};
+                    pair_sum = __builtin_elementwise_fma(values, weight, pair_sum);
+                }
+            }
+            pair_sum += v1_fp32x2{v1_xor_head_sum(pair_sum[0], lane, 16), v1_xor_head_sum(pair_sum[1], lane, 16)};
+            pair_sum += v1_fp32x2{v1_xor_head_sum(pair_sum[0], lane, 32), v1_xor_head_sum(pair_sum[1], lane, 32)};
+            page_sums[0][i] = pair_sum[0];
+            page_sums[1][i] = pair_sum[1];
+        }
+#pragma unroll
+        for (int r = 0; r < Rows; r++) {
+            float sum = (lane < 16 ? page_sums[r][0] : lane < 32 ? page_sums[r][1]
+                         : lane < 48 ? page_sums[r][2] : page_sums[r][3]) * scale;
+            int token = pg * 64 + lane;
+            bool valid = token < lengths[r] && __float_as_uint(sum) != 0u;
+            uint64_t bits = __ballot(valid);
+            if (valid) logits[uint64_t(first + r) * logits_stride + token] = sum;
+            if (group * Rows + r < kGroupedRows && lane == 0) {
+                auto* mask_row = masks + uint64_t(first + r) * mask_stride;
+                if ((mask_stride & 3) == 0 && pg * 4 + 3 < mask_stride)
+                    *reinterpret_cast<uint64_t*>(mask_row + pg * 4) = bits;
+                else {
+#pragma unroll
+                    for (int i = 0; i < 4; i++)
+                        if (pg * 4 + i < mask_stride)
+                            mask_row[pg * 4 + i] = int16_t(bits >> (16 * i));
+                }
+            }
+        }
+        if (has_next) {
+            page = next_page;
+            scale = next_scale;
+        }
+    }
+#endif
+}
+
+template <int kGroupedRows>
+inline void launch_paged_mqa_logits_v1_fp8(
+    const torch::Tensor& q,
+    const torch::Tensor& kv_cache,
+    const torch::Tensor& weights,
+    const torch::Tensor& context_lens,
+    const torch::Tensor& block_table,
+    torch::Tensor& logits,
+    torch::Tensor& nonzero_mask,
+    const int persistent_ctas,
+    cudaStream_t stream) {
+    const auto logits_stride = static_cast<uint64_t>(logits.stride(0));
+    const auto kv_stride = static_cast<uint64_t>(kv_cache.stride(0) * kv_cache.element_size());
+    const auto table_stride = static_cast<uint64_t>(block_table.stride(0));
+    const int64_t pages = (logits_stride + 63) / 64;
+    const int persistent = static_cast<int>(std::min<int64_t>(persistent_ctas == 0 ? 256 : persistent_ctas, pages));
+    constexpr int groups = (kGroupedRows + 1) / 2;
+    const int64_t blocks = (q.size(0) / kGroupedRows) * groups * persistent;
+    TORCH_CHECK(blocks <= INT32_MAX, "V1 FP8 sparse MQA grid is too large");
+    paged_mqa_logits_v1_fp8_kernel<kGroupedRows><<<static_cast<unsigned int>(blocks), 64, 0, stream>>>(
+        reinterpret_cast<const uint8_t*>(q.data_ptr<at::Float8_e4m3fn>()),
+        kv_cache.data_ptr<uint8_t>(), kv_stride, weights.data_ptr<float>(),
+        logits_stride, table_stride, context_lens.data_ptr<int>(), logits.data_ptr<float>(),
+        block_table.data_ptr<int>(), nonzero_mask.data_ptr<int16_t>(), persistent);
+    const auto error = hipGetLastError();
+    TORCH_CHECK(error == hipSuccess, "V1 FP8 sparse MQA launch failed: ", hipGetErrorString(error));
+}
+
+inline void dispatch_paged_mqa_logits_v1_fp8(
+    const int group_size,
+    const torch::Tensor& q,
+    const torch::Tensor& kv_cache,
+    const torch::Tensor& weights,
+    const torch::Tensor& context_lens,
+    const torch::Tensor& block_table,
+    torch::Tensor& logits,
+    torch::Tensor& nonzero_mask,
+    const int persistent_ctas,
+    cudaStream_t stream) {
+    switch (group_size) {
+        case 1:
+            launch_paged_mqa_logits_v1_fp8<1>(q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
+        case 3:
+            launch_paged_mqa_logits_v1_fp8<3>(q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
+        case 4:
+            launch_paged_mqa_logits_v1_fp8<4>(q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
+        case 5:
+            launch_paged_mqa_logits_v1_fp8<5>(q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
+        case 6:
+            launch_paged_mqa_logits_v1_fp8<6>(q, kv_cache, weights, context_lens, block_table,
+                logits, nonzero_mask, persistent_ctas, stream);
+            return;
+        default:
+            TORCH_CHECK(false, "V1 FP8 sparse MQA supports group_size 1/3/4/5/6");
+    }
+}
+
 
 inline __device__ __forceinline__ bool bf16x8_all_finite(
     const f16x8_t& values) {
