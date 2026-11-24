@@ -403,7 +403,7 @@ struct RowQ {
     float w[HT][4];
     // The row's smallest and largest Q scale, which bound the BF16 subnormal shift.
     int smin, smax;
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     // FP8 fragments exist only where the FP8 MMAC does; elsewhere they would
     // cost the fragments' VGPRs for nothing.
     intx2 f8[HT][4];
@@ -441,7 +441,7 @@ struct RowQ {
         }
         smax = wave_max(smax);
         smin = wave_min(smin);
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
         pq = min(smax, smin + 5);
         fp8_ok = smax - smin <= 11;
 #pragma unroll
@@ -548,7 +548,7 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
         kb[tile] = uintx4{0, 0, 0, 0};
         if (payload[tile]) kb[tile] = *reinterpret_cast<const uintx4*>(payload[tile]);
     }
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
     if constexpr (SharedBf && H == 32 && TB == 64) {
         // A common K exponent gives pk == sk and an exact zero-offset FP8 conversion.
         // The data payload may have any E2M1 values. Fallback handles mixed scales.
@@ -689,7 +689,7 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
             shift = max(0, min(max(need, 2) - kmin, min(252 - kmax, 368 - qmax - kmax)));
         }
         bool need_bf16 = true;
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
         const int s0 = sw[tile] & 255u, s1 = (sw[tile] >> 8) & 255u;
         const int s2 = (sw[tile] >> 16) & 255u, s3 = sw[tile] >> 24;
         const int kmax = max(max(s0, s1), max(s2, s3));
@@ -732,7 +732,7 @@ __device__ __forceinline__ void score_split(const Args& a, const RowQ<H, SharedB
 #pragma unroll
             for (int h = 0; h < HT; ++h) acc[h] = floatx4{0.0f, 0.0f, 0.0f, 0.0f};
             float logit;
-#if defined(__gfx938__)
+#if defined(__gfx938__) || defined(__gfx946__)
             if (fp8[i]) {
 #pragma unroll
                 for (int k = 0; k < 4; ++k) {

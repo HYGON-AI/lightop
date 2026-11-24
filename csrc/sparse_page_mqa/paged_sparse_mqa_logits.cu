@@ -124,7 +124,7 @@ __device__ __forceinline__ int wave_max(int x) {
     return x;
 }
 __device__ __forceinline__ uint16_t to_bf16(float x) {
-#if defined(__gfx938__) && __has_builtin(__builtin_hcu_cvt_bf16_f32)
+#if (defined(__gfx938__) || defined(__gfx946__)) && __has_builtin(__builtin_hcu_cvt_bf16_f32)
     return static_cast<uint16_t>(__builtin_hcu_cvt_bf16_f32(x, false, false));
 #else
     const uint32_t u = __float_as_uint(x);
@@ -4050,7 +4050,7 @@ __device__ __forceinline__ int wave_max(int x) {
     return x;
 }
 __device__ __forceinline__ uint16_t to_bf16(float x) {
-#if defined(__gfx938__) && __has_builtin(__builtin_hcu_cvt_bf16_f32)
+#if (defined(__gfx938__) || defined(__gfx946__)) && __has_builtin(__builtin_hcu_cvt_bf16_f32)
     return static_cast<uint16_t>(__builtin_hcu_cvt_bf16_f32(x, false, false));
 #else
     const uint32_t u = __float_as_uint(x);
