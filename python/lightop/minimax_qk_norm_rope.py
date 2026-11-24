@@ -54,3 +54,22 @@ def minimax_qk_norm_rope(
             variant,
         )
     )
+
+
+def minimax_qk_norm_rope_fp8_cache(
+    qkv, weights, positions, cos_sin_cache, eps, locations, main_mapping,
+    key_cache, value_cache, index_cache, *, heads_per_block=None,
+):
+    """Fused rotary64 QK/index norm with unit-scale E4M3 queries and KV stores.
+
+    Locations are logical for index K and translated through main_mapping for
+    main K/V. Live locations must be distinct within one launch. Position IDs
+    must address cos_sin_cache, and all tensors must be on the same device.
+    """
+    from . import op
+
+    args = (qkv, weights, positions, cos_sin_cache, eps, locations, main_mapping,
+            key_cache, value_cache, index_cache)
+    if heads_per_block is None:
+        return tuple(op.minimax_qk_norm_rope_fp8_cache(*args))
+    return tuple(op.minimax_qk_norm_rope_fp8_cache(*args, heads_per_block))

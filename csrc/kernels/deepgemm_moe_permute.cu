@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <cub/block/block_scan.cuh>
 #include <cuda.h>
 #include <cuda_runtime.h>
@@ -374,7 +376,7 @@ __launch_bounds__(BLOCK_SIZE) __global__ void quant_scatter_opt_kernel(
 
 template <typename T, typename ScaleT, typename TopKType,
           int SCATTER_THREADS_PER_GROUP, int SCATTER_MAX_K>
-__launch_bounds__(1024) __global__
+__launch_bounds__(SCATTER_THREADS_PER_GROUP * SCATTER_MAX_K) __global__
     void ep_scatter_kernel(const T *__restrict__ aq,            // int8
                            const ScaleT *__restrict__ aq_scale, // float
                            const TopKType *__restrict__ topk_ids,
@@ -1045,6 +1047,25 @@ void launch_ep_scatter(
             inv_perm_ptr, m_indices_ptr, num_tokens, K, local_num_experts, H,
             expert_map_size, has_expert_map);
     return;
+  }
+
+  // This tuning override is only for large Top4 prefill batches. The
+  // two-token CTA above still owns the small-batch range, including 4096.
+  if (K == 4 && H == 6144 && HS == 1 && !has_expert_map) {
+    const char* threads = std::getenv("LIGHTOP_EP_SCATTER_TOP4_THREADS");
+    if (threads != nullptr && std::strcmp(threads, "512") == 0) {
+      constexpr int SCATTER_THREADS_PER_GROUP = 128;
+      constexpr int SCATTER_MAX_K = 4;
+      ep_scatter_kernel<data_t, scale_t, TopKType, SCATTER_THREADS_PER_GROUP,
+                        SCATTER_MAX_K>
+          <<<num_tokens, SCATTER_THREADS_PER_GROUP * SCATTER_MAX_K,
+             H * sizeof(data_t), stream>>>(
+              aq_ptr, aq_scale_ptr, topk_ids.data_ptr<TopKType>(),
+              expert_map_ptr, expert_counters_ptr, aq_out_ptr, aq_scale_out_ptr,
+              inv_perm_ptr, m_indices_ptr, num_tokens, K, local_num_experts, H,
+              HS, expert_map_size, has_expert_map);
+      return;
+    }
   }
 
   if (K <= 8) {

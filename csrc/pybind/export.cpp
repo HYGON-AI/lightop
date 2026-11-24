@@ -6,6 +6,9 @@
 namespace at::native {
 torch::Tensor minimax_cp_fp8_pack(torch::Tensor,torch::Tensor,torch::Tensor,double,double,bool,bool);
 void minimax_cp_cache_scatter(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor);
+std::vector<torch::Tensor> minimax_qk_norm_rope_fp8_cache(
+    torch::Tensor, std::vector<torch::Tensor>, torch::Tensor, torch::Tensor, double,
+    torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, int64_t);
 std::vector<torch::Tensor> minimax_qk_norm_rope(torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,torch::Tensor,double,int64_t,bool,int64_t);
 }
 
@@ -753,6 +756,8 @@ void swiglu_oai_int8_quant_contiguous_block_tables(const torch::Tensor&,torch::T
 void swiglu_oai_int8_quant_contiguous_direct(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double,int64_t,int64_t);
 void swiglu_oai_int8_quant_masked_flat_tables(const torch::Tensor&,torch::Tensor&,torch::Tensor&,const torch::Tensor&,const torch::Tensor&,const torch::Tensor&,double,double,double,int64_t,int64_t);
 void swiglu_oai_int8_quant_contiguous(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double);
+void swiglu_oai_int8_quant_vllm_contiguous(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double, const std::optional<torch::Tensor>&, int64_t);
+void swiglu_oai_int8_quant_vllm_transposed(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double, const torch::Tensor&, int64_t);
 void swiglu_oai_int8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, double);
 std::vector<torch::Tensor> swiglu_oai_fp8_quant_contiguous(const torch::Tensor& input, double alpha, double beta, double limit);
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
@@ -1880,6 +1885,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("swiglu_oai_int8_quant_contiguous_direct", &at::native::swiglu_oai_int8_quant_contiguous_direct);
  m.def("swiglu_oai_int8_quant_masked_flat_tables", &at::native::swiglu_oai_int8_quant_masked_flat_tables);
  m.def("swiglu_oai_int8_quant_contiguous", &at::native::swiglu_oai_int8_quant_contiguous, "BF16-rounded OAI row INT8 quantization");
+ m.def("swiglu_oai_int8_quant_vllm_contiguous", &at::native::swiglu_oai_int8_quant_vllm_contiguous,
+       "BF16-rounded OAI row INT8 quantization using the vLLM scale contract",
+       py::arg("input"), py::arg("output"), py::arg("scales"), py::arg("alpha"),
+       py::arg("beta"), py::arg("limit"), py::arg("gate_table"), py::arg("block_threads") = 384);
+ m.def("swiglu_oai_int8_quant_vllm_transposed", &at::native::swiglu_oai_int8_quant_vllm_transposed);
  m.def("swiglu_oai_int8_quant_masked", &at::native::swiglu_oai_int8_quant_masked, "Masked BF16-rounded OAI row INT8 quantization with zero/unit padding");
  m.def("swiglu_oai_fp8_quant_contiguous", &at::native::swiglu_oai_fp8_quant_contiguous, "Contiguous BF16 OAI activation and per-token E4M3FN quantization", pybind11::arg("input"), pybind11::arg("alpha") = 1.702, pybind11::arg("beta") = 1.0, pybind11::arg("limit") = 7.0);
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
@@ -2159,6 +2169,11 @@ m.def("mimo_v2_split_rope_vscale_kv_store", &at::native::mimo_v2_split_rope_vsca
   m.def("make_interleave_plan_", &lightop::cp_output::make_interleave_plan_,
         py::arg("cycle_leaders"), py::arg("rows"), py::arg("cp_size"));
   m.def("minimax_qk_norm_rope", &at::native::minimax_qk_norm_rope);
+  m.def("minimax_qk_norm_rope_fp8_cache", &at::native::minimax_qk_norm_rope_fp8_cache,
+        py::arg("qkv"), py::arg("weights"), py::arg("positions"), py::arg("cos_sin_cache"),
+        py::arg("eps"), py::arg("locations"), py::arg("main_mapping"),
+        py::arg("key_cache"), py::arg("value_cache"), py::arg("index_cache"),
+        py::arg("heads_per_block") = 16);
   m.def("minimax_cp_fp8_pack", &at::native::minimax_cp_fp8_pack);
   m.def("minimax_cp_cache_scatter", &at::native::minimax_cp_cache_scatter);
   bind_prefill_sparse_fusion(m);
