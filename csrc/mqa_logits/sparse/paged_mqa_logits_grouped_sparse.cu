@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 
 namespace lightop {
@@ -814,7 +815,11 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         "group_size must be 1 (independent rows) or 3/4/5/6 (MTP2/3/4/5)");
     const bool supported_batch = q.dim() == 4 && q.size(0) > 0 &&
         (group_size == 1 || q.size(0) % group_size == 0);
-    const bool native_fp8_path = is_supported_gfx938 && !int8_kv &&
+    const char* native_env = std::getenv("LIGHTOP_SPARSE_MQA_USE_NATIVE");
+    const char* v1_env = std::getenv("LIGHTOP_SPARSE_MQA_USE_V1");
+    const bool use_native = native_env == nullptr || std::strcmp(native_env, "1") == 0;
+    const bool use_v1 = v1_env != nullptr && std::strcmp(v1_env, "1") == 0;
+    const bool native_fp8_path = (use_native || use_v1) && is_supported_gfx938 && !int8_kv &&
         q.scalar_type() == torch::kFloat8_e4m3fn &&
         fused_kv_cache.scalar_type() == torch::kUInt8 &&
         q.dim() == 4 && q.size(2) == grouped_sparse_native_fp8::kHeads;
@@ -890,7 +895,11 @@ std::vector<torch::Tensor> page_mqa_logits_sparse_mask_grouped_impl(
         ? static_cast<int>(std::min<int64_t>(max_chunks, 32))
         : static_cast<int>(std::min<int64_t>(persistent_ctas, max_chunks));
     auto stream = at::cuda::getCurrentCUDAStream(q.get_device());
-    if (native_fp8_path) {
+    if (native_fp8_path && use_v1 && group_size != 1) {
+        dispatch_paged_mqa_logits_v1_fp8(
+            group_size, q, fused_kv_cache, weights, context_lens, block_table,
+            logits, nonzero_mask, persistent_ctas, stream);
+    } else if (native_fp8_path) {
         grouped_sparse_native_fp8::dispatch_grouped_rows(
             group_size, q, fused_kv_cache, weights, context_lens, block_table,
             logits, nonzero_mask, resolved, stream);
