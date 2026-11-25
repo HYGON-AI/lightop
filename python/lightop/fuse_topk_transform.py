@@ -229,7 +229,20 @@ def fast_kpool_topk_transform_fused(
     out_rows: Optional[int] = None,
     page_table_row_index: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    """Fuse pooled TopK, token expansion, index mapping, and tail append."""
+    """Fuse deterministic pooled TopK, token expansion, mapping, and tail append.
+
+    History groups are ordered by descending ordered-FP32 score key, then by
+    ascending window-local group ID for equal keys. Boundary ties also choose
+    the smaller group IDs. Each selected group expands in token order; tail
+    tokens follow the history and unused output slots remain -1. The ordering
+    is fixed before page-table/offset mapping, so physical allocation does not
+    affect it. Selection and ordering stay in the same current-stream kernel
+    for pool sizes 4 and 16, including short rows and Graph replay.
+
+    Signed zeros and NaN payloads retain the selector's ordered-FP32-bit
+    semantics. This defines a stable tie rule; it does not promise the same
+    tie order as torch.topk, whose tied indices are not generally stable.
+    """
     if pool_size not in (4, 16) or topk != 2048:
         raise ValueError(
             "fast_kpool_topk_transform_fused requires pool_size=4 or 16 "

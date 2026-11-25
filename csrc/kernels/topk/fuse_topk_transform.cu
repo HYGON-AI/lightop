@@ -650,13 +650,15 @@ __device__ bool processHistogramStep(
 
 template <int kNumThreadsPerBlock, int kNumBins, bool useRadixSort,
           bool multipleBlocksPerRow = false, bool mergeBlocks = false,
-          int kMaxTopK = 2048,
+          int kMaxTopK = 2048, bool kDeterministicTies = false,
+          bool kFp32Only = false,
           typename TransformFunc>
 static __device__ void topKPerRowJob(const int* indices, const float* logits,
                                      int rowStart, int rowEnd, int* outIndices,
                                      float* outLogits, int stride1, int topK,
                                      TransformFunc transform_func,
-                                     int* outRawIndices = nullptr) {
+                                     int* outRawIndices = nullptr,
+                                     int* boundaryTieRepair = nullptr) {
   static constexpr int kNumFinalItems = kMaxTopK + 512;
   static constexpr int kNumFinalItemsPerThread = kNumFinalItems / kNumThreadsPerBlock;
   
@@ -757,8 +759,13 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   int thresholdBinIdx = -1;
   uint32_t logitPattern = 0;
 
+  if constexpr (kFp32Only) {
+    processHistogramStep<1, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
+      indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
+  } else {
   processHistogramStep<0, kNumThreadsPerBlock, kNumBins, kNumFinalItems, multipleBlocksPerRow, mergeBlocks>(
       indices, logits, rowEnd, logitPattern, thresholdBinIdx, smemOutput, smemThresholdBinIdx, smemFinalDstIdx, smemFinalBinSize, smemFoundTopKValues, smemFinal, stride1, rowStart, topK, smemBinKeyMin, smemBinKeyMax);
+  }
 
   // Do not branch on the per-lane return value. Although the pass ends with
   // a barrier, relying on every lane observing the same shared scalar has
@@ -775,7 +782,7 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
   bool continueToNextStep = smemContinueToNextStep[0] != 0;
   const bool tieDone = smemTieDone[0] != 0;
 
-  if (continueToNextStep) {
+  if (continueToNextStep && !kFp32Only) {
     // Step 0 uses FP16 bins. Step 1 is a full FP32 rescan, so discard the
     // coarse writes; otherwise high-score entries can be selected twice.
     if (threadIdx.x == 0) {
@@ -865,7 +872,11 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
           // Compare total-order integer keys instead of floats. Floating-point
           // comparisons do not order NaNs, which can assign several candidates
           // the same outIndex and leave holes in smemOutput.
-          if (logitKey > otherLogitKey || (logitKey == otherLogitKey && i > j)) outIndex++;
+          const bool tie_after = kDeterministicTies
+              ? smemFinal.items.indices[i] > smemFinal.items.indices[j]
+              : i > j;
+          if (logitKey > otherLogitKey ||
+              (logitKey == otherLogitKey && tie_after)) outIndex++;
         }
         if (outIndex + baseIdx < topK) {
           smemOutput[outIndex + baseIdx] = smemFinal.items.indices[i];
@@ -876,6 +887,14 @@ static __device__ void topKPerRowJob(const int* indices, const float* logits,
       }
     }
     __syncthreads();
+  }
+
+  if constexpr (kDeterministicTies) {
+    if (threadIdx.x == 0 && boundaryTieRepair != nullptr) {
+      // The normal exact final-bin ranking now breaks ties by logical ID.
+      // Only the all-equal shortcut or final radix scatter needs a rescan.
+      *boundaryTieRepair = (tieDone || continueToNextStep) ? 1 : 0;
+    }
   }
 
   vectorized_write<int, int>(threadIdx.x, kNumThreadsPerBlock, outIndices, topK, [&](int i) {
@@ -2299,8 +2318,308 @@ __device__ __forceinline__ int32_t transform_kpool_token_index(
   return static_cast<int32_t>(raw_idx + ragged_offset);
 }
 
-template <int kKPoolSize, bool kUseRadixRefine = false>
-__global__ __launch_bounds__(kThreadsPerBlock)
+struct KPoolMinimumKey {
+  __device__ __forceinline__ uint32_t operator()(uint32_t a, uint32_t b) const {
+    return a < b ? a : b;
+  }
+};
+
+__device__ __forceinline__ uint64_t kpool_ballot(bool predicate) {
+#ifdef USE_ROCM
+  return __ballot(predicate);
+#else
+  return __ballot_sync(0xffffffffu, predicate);
+#endif
+}
+
+__device__ __forceinline__ uint32_t kpool_shuffle_xor(uint32_t value, int distance) {
+#ifdef USE_ROCM
+  // Fixed exchanges avoid general lane-addressed LDS permutations.
+  switch (distance) {
+    case 1: return __builtin_amdgcn_mov_dpp(value, 0xb1, 0xf, 0xf, false);
+    case 2: return __builtin_amdgcn_mov_dpp(value, 0x4e, 0xf, 0xf, false);
+    case 4: return __builtin_amdgcn_mov_dpp(
+        __builtin_amdgcn_mov_dpp(value, 0x141, 0xf, 0xf, false), 0x1b, 0xf, 0xf, false);
+    case 8: return __builtin_amdgcn_mov_dpp(
+        __builtin_amdgcn_mov_dpp(value, 0x140, 0xf, 0xf, false), 0x141, 0xf, 0xf, false);
+    case 16: return __builtin_amdgcn_ds_swizzle(value, 0x401f);
+    default: return __shfl_xor(value, distance);
+  }
+#else
+  return __shfl_xor_sync(0xffffffffu, value, distance);
+#endif
+}
+
+constexpr int kKPoolThreads = 1024;
+
+template <int N>
+__device__ __forceinline__ void sort_kpool_keys(
+    uint64_t (&keys)[(N + kKPoolThreads - 1) / kKPoolThreads],
+    uint64_t* workspace) {
+  constexpr int Items = (N + kKPoolThreads - 1) / kKPoolThreads;
+  const int tid = threadIdx.x;
+#pragma unroll
+  for (int size = 2; size <= N; size <<= 1) {
+#pragma unroll
+    for (int stride = size >> 1; stride > 0; stride >>= 1) {
+      uint64_t next[Items];
+      if (stride >= WARP_SIZE && stride < kKPoolThreads) {
+#pragma unroll
+        for (int item = 0; item < Items; ++item) {
+          const int index = tid + item * kKPoolThreads;
+          if (index < N) workspace[index] = keys[item];
+        }
+        __syncthreads();
+      }
+#pragma unroll
+      for (int item = 0; item < Items; ++item) {
+        const int index = tid + item * kKPoolThreads;
+        uint64_t peer;
+        if (stride >= kKPoolThreads) {
+          peer = keys[item ^ (stride / kKPoolThreads)];
+        } else if (stride >= WARP_SIZE) {
+          peer = index < N ? workspace[index ^ stride] : uint64_t{0};
+        } else {
+          const uint32_t lo = kpool_shuffle_xor(static_cast<uint32_t>(keys[item]), stride);
+          const uint32_t hi = kpool_shuffle_xor(static_cast<uint32_t>(keys[item] >> 32), stride);
+          peer = (static_cast<uint64_t>(hi) << 32) | lo;
+        }
+        const bool take_max = ((index & size) == 0) == ((index & stride) == 0);
+        next[item] = take_max ? (keys[item] > peer ? keys[item] : peer)
+                              : (keys[item] < peer ? keys[item] : peer);
+      }
+      if (stride >= WARP_SIZE && stride < kKPoolThreads) __syncthreads();
+#pragma unroll
+      for (int item = 0; item < Items; ++item) keys[item] = next[item];
+    }
+  }
+}
+
+template <int K>
+__device__ void canonicalize_kpool_topk(
+    const float* input, int32_t* selected_groups,
+    int row_start, int length, bool repair_boundary_ties) {
+  if (length <= 1) return;
+  constexpr int Items = (K + kKPoolThreads - 1) / kKPoolThreads;
+#ifndef USE_ROCM
+  using Reduce = cub::BlockReduce<uint32_t, kKPoolThreads>;
+#else
+  using Reduce = hipcub::BlockReduce<uint32_t, kKPoolThreads>;
+#endif
+  __shared__ typename Reduce::TempStorage reduce_storage;
+  __shared__ uint32_t threshold_key;
+  __shared__ int better_count;
+  constexpr int Waves = kKPoolThreads / WARP_SIZE;
+  __shared__ int tie_offsets[Waves];
+  const int tid = threadIdx.x;
+  if (length > K && repair_boundary_ties) {
+    // Save all old IDs before the intermediate shared compaction overwrites them.
+    int groups[Items];
+    uint32_t keys[Items];
+    uint32_t minimum = 0xffffffffu;
+#pragma unroll
+    for (int item = 0; item < Items; ++item) {
+      const int index = tid + item * kKPoolThreads;
+      const int group = index < K ? selected_groups[index] : -1;
+      groups[item] = group;
+      keys[item] = group >= 0 && group < length
+          ? kpool_descending_key(input[row_start + group]) : 0xffffffffu;
+      minimum = keys[item] < minimum ? keys[item] : minimum;
+    }
+    minimum = Reduce(reduce_storage).Reduce(minimum, KPoolMinimumKey{});
+    if (tid == 0) { threshold_key = minimum; better_count = 0; }
+    __syncthreads();
+#pragma unroll
+    for (int item = 0; item < Items; ++item) {
+      if (groups[item] >= 0 && groups[item] < length && keys[item] > threshold_key)
+        selected_groups[atomicAdd(&better_count, 1)] = groups[item];
+    }
+    __syncthreads();
+    const int wave = tid / WARP_SIZE, lane = tid % WARP_SIZE;
+    const int range_size = (length + Waves - 1) / Waves;
+    const int begin = wave * range_size;
+    const int end = begin + range_size < length ? begin + range_size : length;
+    int equal_count = 0;
+    for (int base = begin; base < end; base += WARP_SIZE) {
+      const int id = base + lane;
+      equal_count += __popcll(kpool_ballot(id < end &&
+          kpool_descending_key(input[row_start + id]) == threshold_key));
+    }
+    if (lane == 0) tie_offsets[wave] = equal_count;
+    __syncthreads();
+    if (tid == 0) {
+      int prefix = 0;
+      for (int w = 0; w < Waves; ++w) {
+        const int count = tie_offsets[w]; tie_offsets[w] = prefix; prefix += count;
+      }
+    }
+    __syncthreads();
+    const int ties_needed = K - better_count;
+    const uint64_t lower_lanes = lane ? (uint64_t{1} << lane) - 1 : 0;
+    int tie_pos = tie_offsets[wave];
+    for (int base = begin; base < end && tie_pos < ties_needed; base += WARP_SIZE) {
+      const int id = base + lane;
+      const bool equal = id < end && kpool_descending_key(input[row_start + id]) == threshold_key;
+      const uint64_t votes = kpool_ballot(equal);
+      const int rank = tie_pos + __popcll(votes & lower_lanes);
+      if (equal && rank < ties_needed) selected_groups[better_count + rank] = id;
+      tie_pos += __popcll(votes);
+    }
+    __syncthreads();
+  }
+  __shared__ uint64_t workspace[K];
+  uint64_t keys[Items];
+#pragma unroll
+  for (int item = 0; item < Items; ++item) {
+    const int index = tid + item * kKPoolThreads;
+    const int group = index < K ? selected_groups[index] : -1;
+    keys[item] = group >= 0 && group < length
+        ? (static_cast<uint64_t>(kpool_descending_key(input[row_start + group])) << 32) |
+              static_cast<uint32_t>(~static_cast<uint32_t>(group)) : uint64_t{0};
+  }
+  sort_kpool_keys<K>(keys, workspace);
+#pragma unroll
+  for (int item = 0; item < Items; ++item) {
+    const int index = tid + item * kKPoolThreads;
+    if (index < K) selected_groups[index] = keys[item]
+        ? static_cast<int32_t>(~static_cast<uint32_t>(keys[item])) : -1;
+  }
+  __syncthreads();
+}
+
+__device__ __forceinline__ int kpool_coarse_bin(float value) {
+  uint16_t bits = __half_as_ushort(__float2half(value));
+  bits = (bits & 0x8000u) ? bits : static_cast<uint16_t>(~bits & 0x7fffu);
+  return bits >> 4;
+}
+
+// Whole coarse buckets are compacted in score order. Exact comparisons only
+// rank within each small bucket, avoiding a full-block sort in long rows.
+// Candidate and bucket sizes are certified before any bounded-buffer write.
+template <int K>
+__device__ bool select_sorted_kpool_topk(
+    const float* input, int length, int32_t* selected_groups) {
+  constexpr int Capacity = 2 * K;
+  constexpr int Bins = 4096;
+#ifndef USE_ROCM
+  using Scan = cub::BlockScan<int, kKPoolThreads>;
+#else
+  using Scan = hipcub::BlockScan<int, kKPoolThreads>;
+#endif
+  __shared__ union {
+    struct { int starts[Bins + 1]; int cursors[Bins]; } bins;
+    typename Scan::TempStorage scan;
+  } hist;
+  __shared__ uint64_t candidates[Capacity];
+  __shared__ int boundary_bin, candidate_count, has_special;
+  const int tid = threadIdx.x;
+  if (length <= Capacity) {
+    if (tid == 0) candidate_count = length;
+    for (int index = tid; index < Capacity; index += kKPoolThreads) {
+      candidates[index] = index < length
+          ? (static_cast<uint64_t>(kpool_descending_key(input[index])) << 32) |
+                static_cast<uint32_t>(~static_cast<uint32_t>(index)) : uint64_t{0};
+    }
+    __syncthreads();
+    constexpr int Items = (Capacity + kKPoolThreads - 1) / kKPoolThreads;
+    uint64_t keys[Items];
+#pragma unroll
+    for (int item = 0; item < Items; ++item) {
+      const int index = tid + item * kKPoolThreads;
+      keys[item] = index < Capacity ? candidates[index] : uint64_t{0};
+    }
+    sort_kpool_keys<Capacity>(keys, candidates);
+#pragma unroll
+    for (int item = 0; item < Items; ++item) {
+      const int index = tid + item * kKPoolThreads;
+      if (index < K) selected_groups[index] = keys[item]
+          ? static_cast<int32_t>(~static_cast<uint32_t>(keys[item])) : -1;
+    }
+    __syncthreads();
+    return true;
+  }
+
+  if (tid == 0) has_special = 0;
+  for (int i = tid; i < Bins; i += kKPoolThreads) hist.bins.cursors[i] = 0;
+  __syncthreads();
+  vectorized_process(tid, kKPoolThreads, input, length, [&](float value, int) {
+    const int bin = kpool_coarse_bin(value);
+#ifdef USE_ROCM
+    // Aggregate the dominant +0 plateau; ordinary nonzero bins stay direct.
+    constexpr int ZeroBin = 0x7fff >> 4;
+    const uint64_t zeros = kpool_ballot(bin == ZeroBin);
+    if (bin == ZeroBin) {
+      const int leader = __ffsll(static_cast<unsigned long long>(zeros)) - 1;
+      if (tid % WARP_SIZE == leader) atomicAdd(&hist.bins.cursors[bin], __popcll(zeros));
+    } else {
+      atomicAdd(&hist.bins.cursors[bin], 1);
+    }
+#else
+    atomicAdd(&hist.bins.cursors[bin], 1);
+#endif
+  });
+  __syncthreads();
+  constexpr int BinItems = Bins / kKPoolThreads;
+  int counts[BinItems], prefixes[BinItems], total;
+#pragma unroll
+  for (int i = 0; i < BinItems; ++i) {
+    const int bin = tid * BinItems + i;
+    counts[i] = hist.bins.cursors[bin];
+    // Infinity bins also contain rounded overflow and NaN payloads. Route
+    // these rare rows to full-FP32 selection without per-value NaN checks.
+    if ((bin < Bins / 64 || bin >= Bins - Bins / 64) && counts[i])
+      atomicExch(&has_special, 1);
+  }
+  __syncthreads();
+  if (has_special) return false;
+  Scan(hist.scan).ExclusiveSum(counts, prefixes, total);
+  __syncthreads();
+#pragma unroll
+  for (int i = 0; i < BinItems; ++i) {
+    const int bin = tid * BinItems + i;
+    hist.bins.starts[bin] = prefixes[i];
+    hist.bins.cursors[bin] = prefixes[i];
+    if (prefixes[i] < K && prefixes[i] + counts[i] >= K) {
+      boundary_bin = bin;
+      candidate_count = prefixes[i] + counts[i];
+    }
+  }
+  if (tid == 0) hist.bins.starts[Bins] = length;
+  __syncthreads();
+  const int cutoff = boundary_bin;
+  if (candidate_count > Capacity ||
+      hist.bins.starts[cutoff + 1] - hist.bins.starts[cutoff] > 512) return false;
+
+  vectorized_process(tid, kKPoolThreads, input, length, [&](float value, int id) {
+    const int bin = kpool_coarse_bin(value);
+    if (bin <= cutoff) {
+      const int pos = atomicAdd(&hist.bins.cursors[bin], 1);
+      candidates[pos] = (static_cast<uint64_t>(kpool_descending_key(value)) << 32) |
+          static_cast<uint32_t>(~static_cast<uint32_t>(id));
+    }
+  });
+  __syncthreads();
+  // Candidates already occupy score-ordered coarse buckets. Exact rank
+  // comparisons stay inside each small bucket; the immutable composite keys
+  // make both ties and output positions independent of atomic arrival order.
+  for (int pos = tid; pos < candidate_count; pos += kKPoolThreads) {
+    const uint64_t key = candidates[pos];
+    const uint32_t ordered = static_cast<uint32_t>(key >> 32);
+    const uint32_t bits = (ordered & 0x80000000u)
+        ? ordered & 0x7fffffffu : ~ordered;
+    const int bin = kpool_coarse_bin(__uint_as_float(bits));
+    const int begin = hist.bins.starts[bin], end = hist.bins.starts[bin + 1];
+    int rank = begin;
+    #pragma unroll 4
+    for (int other = begin; other < end; ++other) rank += candidates[other] > key;
+    if (rank < K) selected_groups[rank] = static_cast<int32_t>(~static_cast<uint32_t>(key));
+  }
+  __syncthreads();
+  return true;
+}
+
+template <int kKPoolSize>
+__global__ __launch_bounds__(kKPoolThreads)
 void fused_kpool_topk_transform_kernel(
     FastTopKParams params,
     int32_t* __restrict__ output,
@@ -2315,7 +2634,6 @@ void fused_kpool_topk_transform_kernel(
     int score_cols,
     int rows) {
   static_assert(kKPoolSize == 4 || kKPoolSize == 16);
-  static_assert(!kUseRadixRefine || kKPoolSize == 4);
   constexpr int kKPoolGroupTopK = kKPoolTokenTopK / kKPoolSize;
   constexpr int kKPoolOutputCols = kKPoolTokenTopK + kKPoolSize - 1;
   const int bid = blockIdx.x;
@@ -2324,7 +2642,7 @@ void fused_kpool_topk_transform_kernel(
   if (bid >= rows) {
     vectorized_write<int32_t, int>(
         threadIdx.x,
-        kThreadsPerBlock,
+        kKPoolThreads,
         out_row,
         kKPoolOutputCols,
         [] __device__(int) { return -1; });
@@ -2341,63 +2659,19 @@ void fused_kpool_topk_transform_kernel(
       params.input + static_cast<int64_t>(bid) * params.input_stride;
 
   __shared__ int32_t selected_groups[kKPoolGroupTopK];
-  extern __shared__ int32_t kpool_candidate_workspace[];
-  if (length <= kKPoolGroupTopK) {
-    vectorized_write<int32_t, int>(
-        threadIdx.x,
-        kThreadsPerBlock,
-        selected_groups,
-        kKPoolGroupTopK,
-        [length] __device__(int i) { return i < length ? i : -1; });
-  } else {
-    if constexpr (kUseRadixRefine) {
-      if (length <= kKPool4VgprMaxLength) {
-        select_kpool_topk_vgpr<kKPoolGroupTopK>(
-            logits,
-            selected_groups,
-            row_start,
-            length,
-            reinterpret_cast<uint32_t*>(kpool_candidate_workspace));
-      } else {
-        auto identity = [] __device__(int raw_idx) { return raw_idx; };
-        topKPerRowJob<
-            kThreadsPerBlock,
-            2048,
-            false,
-            false,
-            false,
-            512>(
-            nullptr,
-            logits,
-            row_start,
-            row_end,
-            selected_groups,
-            nullptr,
-            1,
-            kKPoolGroupTopK,
-            identity);
-      }
-    } else {
-      auto identity = [] __device__(int raw_idx) { return raw_idx; };
-      topKPerRowJob<
-          kThreadsPerBlock,
-          2048,
-          false,
-          false,
-          false,
-          512>(
-          nullptr,
-          logits,
-          row_start,
-          row_end,
-          selected_groups,
-          nullptr,
-          1,
-          kKPoolGroupTopK,
-          identity);
-    }
+  __shared__ int boundary_tie_repair;
+  if (threadIdx.x == 0) boundary_tie_repair = 0;
+  const bool sorted = select_sorted_kpool_topk<kKPoolGroupTopK>(
+      logits + row_start, length, selected_groups);
+  if (!sorted) {
+    auto identity = [] __device__(int raw_idx) { return raw_idx; };
+    topKPerRowJob<kKPoolThreads, 2048, false, false, false, 512, true, true>(
+        nullptr, logits, row_start, row_end, selected_groups, nullptr, 1,
+        kKPoolGroupTopK, identity, nullptr, &boundary_tie_repair);
+    __syncthreads();
+    canonicalize_kpool_topk<kKPoolGroupTopK>(
+        logits, selected_groups, row_start, length, boundary_tie_repair != 0);
   }
-  __syncthreads();
 
   const int history_groups =
       length < kKPoolGroupTopK ? length : kKPoolGroupTopK;
@@ -2411,7 +2685,7 @@ void fused_kpool_topk_transform_kernel(
 
   vectorized_write<int32_t, int>(
       threadIdx.x,
-      kThreadsPerBlock,
+      kKPoolThreads,
       out_row,
       kKPoolOutputCols,
       [=] __device__(int col) {
@@ -2983,12 +3257,14 @@ void fast_kpool_topk_transform_interface(
   const auto params = get_params(score, lengths, row_starts_opt);
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(out_rows)};
-  const auto block = dim3{kThreadsPerBlock};
+  const auto block = dim3{kKPoolThreads};
   if (pool_size == 4) {
-    setup_kernel_smem_once<fused_kpool_topk_transform_kernel<4, true>>(
-        kKPool4VgprSmemBytes);
-    fused_kpool_topk_transform_kernel<4, true>
-        <<<grid, block, kKPool4VgprSmemBytes, stream>>>(
+    constexpr size_t dynamic_smem =
+        (kKPoolTokenTopK / 4) * sizeof(int32_t);
+    setup_kernel_smem_once<fused_kpool_topk_transform_kernel<4>>(
+        dynamic_smem);
+    fused_kpool_topk_transform_kernel<4>
+        <<<grid, block, dynamic_smem, stream>>>(
             params, output.data_ptr<int32_t>(), seq_lens.data_ptr<int32_t>(),
             page_table, topk_indices_offset, page_table_row_index,
             output.stride(0), page_table_stride, page_table_rows,
