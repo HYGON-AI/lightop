@@ -615,6 +615,21 @@ void destindex_dequantize_int8_cuda(const torch::Tensor& input, const torch::Ten
 std::vector<at::Tensor> kimi_k2_moe_fused_gate(at::Tensor &input, at::Tensor &bias, int64_t topk,bool renormalize, double routed_scaling_factor,bool apply_routed_scaling_factor_on_output); 
 void fuse_rms_mrope_cuda(Tensor &q, Tensor &k, const Tensor &cos, const Tensor &sin, const std::vector<int>& mrope_section, int head_size, int rotary_dim,bool is_interleaved,Tensor weight_q,Tensor weight_k,c10::optional<Tensor> residual_q,c10::optional<Tensor> residual_k,double epsilon);
 void ep_gather(torch::Tensor& a,torch::Tensor& topk_ids,torch::Tensor& topk_weights,torch::Tensor& inv_perm,torch::optional<torch::Tensor> expert_map,torch::Tensor& output,bool specialize_k8 = false);
+torch::Tensor moe_gather(
+    torch::Tensor scatter_tokens,
+    torch::Tensor scatter_token_id,
+    torch::Tensor scatter_token_weight,
+    torch::Tensor convergent_tokens,
+    int64_t num_tokens,
+    torch::Tensor residual_tokens,
+    int64_t res_token_start,
+    int64_t res_token_end,
+    double res_scale,
+    torch::Tensor inv_perm);
+torch::Tensor moe_gather_build_inv_perm(
+    torch::Tensor scatter_token_id,
+    int64_t num_tokens,
+    int64_t topk);
 torch::Tensor backward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
 std::vector<torch::Tensor> forward_polyfill_cuda(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,int width,int height,float inv_smoothness,int mode);
 torch::Tensor backward_polyfill_lightop(torch::Tensor vertices,torch::Tensor output,torch::Tensor nearest_edge_map,torch::Tensor grad_output,torch::Tensor grad_vertices,int width,int height,float inv_smoothness,int mode);
@@ -655,7 +670,26 @@ void fused_add_layer_norm_opt(torch::Tensor& input,torch::Tensor& residual,torch
 void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
-void relu2_opt(torch::Tensor& out,torch::Tensor& input); 
+void relu2_opt(torch::Tensor& out,torch::Tensor& input);
+// P1 custom_ops ports
+Tensor gelu_opt(const Tensor& input, c10::string_view approximate);
+Tensor gelu_opt_out(const Tensor& input, Tensor& output, c10::string_view approximate);
+Tensor silu_opt(const Tensor& input);
+Tensor silu_opt_out(const Tensor& input, Tensor& output);
+Tensor log_opt(const Tensor& input);
+Tensor log_opt_out(const Tensor& input, Tensor& output);
+std::tuple<Tensor, Tensor> reduce_max_opt(const Tensor& input);
+std::tuple<Tensor, Tensor> reduce_max_opt_out(const Tensor& input, Tensor& values, Tensor& indices);
+std::tuple<Tensor, Tensor> reduce_min_opt(const Tensor& input);
+std::tuple<Tensor, Tensor> reduce_min_opt_out(const Tensor& input, Tensor& values, Tensor& indices);
+Tensor index_select_opt(const Tensor& src, int64_t dim, const Tensor& index);
+Tensor index_select_opt_out(const Tensor& src, int64_t dim, const Tensor& index, Tensor& out);
+Tensor index_add_opt(const Tensor& dst, int64_t dim, const Tensor& index, const Tensor& src, bool assume_unique);
+Tensor index_add_opt_out(Tensor& dst, int64_t dim, const Tensor& index, const Tensor& src, bool assume_unique);
+Tensor embedding_opt(Tensor& dst, Tensor& index, Tensor& weight);
+Tensor gather_opt(Tensor& dst, Tensor& index, Tensor& src, bool special);
+Tensor scatter_opt(Tensor& dst, Tensor& index, Tensor& src, bool special);
+std::vector<Tensor> topk_power2_opt(Tensor& value, Tensor& indice, Tensor& src, int64_t k);
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
@@ -755,6 +789,19 @@ void swiglu_oai_int8_quant_masked_flat_tables(const torch::Tensor&,torch::Tensor
 void swiglu_oai_int8_quant_contiguous(const torch::Tensor&, torch::Tensor&, torch::Tensor&, double, double, double);
 void swiglu_oai_int8_quant_masked(const torch::Tensor&, torch::Tensor&, torch::Tensor&, const torch::Tensor&, double, double, double);
 std::vector<torch::Tensor> swiglu_oai_fp8_quant_contiguous(const torch::Tensor& input, double alpha, double beta, double limit);
+
+
+std::vector<torch::Tensor> add_rms_norm_dynamic_quant(
+  torch::Tensor& hidden_states,
+  torch::Tensor& norm_weight,
+  torch::Tensor& smooth_scale,
+  torch::Tensor& residual,
+  torch::Tensor& quant_tokens,
+  torch::Tensor& per_token_scale,
+  torch::Tensor& after_res,
+  torch::Tensor& after_norm,
+  int64_t output_mode,
+  double eps);
 void moe_swiglu_dynamic_quant(torch::Tensor& scatter_tokens, torch::Tensor& smooth, torch::Tensor& experts_tokens_count, torch::Tensor& experts_tokens_start, torch::Tensor& output, torch::Tensor& scales, float beta);
 void per_token_group_quant_fp8(
     torch::Tensor& out,        
@@ -1767,6 +1814,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         py::arg("a"), py::arg("topk_ids"), py::arg("topk_weights"),
         py::arg("inv_perm"), py::arg("expert_map"), py::arg("output"),
         py::arg("specialize_k8") = false);
+  m.def("moe_gather", &at::native::moe_gather, "moe_gather");
+  m.def("moe_gather_build_inv_perm", &at::native::moe_gather_build_inv_perm, "moe_gather_build_inv_perm");
   m.def("backward_polyfill_cuda", &at::native::backward_polyfill_cuda, "backward_polyfill_cuda");
   m.def("forward_polyfill_cuda", &at::native::forward_polyfill_cuda, "forward_polyfill_cuda");
   m.def("forward_polyfill_lightop", &at::native::forward_polyfill_lightop, "forward_polyfill_lightop");
@@ -1835,6 +1884,31 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
   m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
   m.def("relu2_opt", &at::native::relu2_opt, "relu2_opt");
+  m.def("gelu_opt", &at::native::gelu_opt, "gelu_opt", py::arg("input"), py::arg("approximate") = "none");
+  m.def("gelu_opt_out", &at::native::gelu_opt_out, "gelu_opt_out",
+        py::arg("input"), py::arg("output"), py::arg("approximate") = "none");
+  m.def("silu_opt", &at::native::silu_opt, "silu_opt");
+  m.def("silu_opt_out", &at::native::silu_opt_out, "silu_opt_out");
+  m.def("log_opt", &at::native::log_opt, "log_opt");
+  m.def("log_opt_out", &at::native::log_opt_out, "log_opt_out");
+  m.def("reduce_max_opt", &at::native::reduce_max_opt, "reduce_max_opt");
+  m.def("reduce_max_opt_out", &at::native::reduce_max_opt_out, "reduce_max_opt_out");
+  m.def("reduce_min_opt", &at::native::reduce_min_opt, "reduce_min_opt");
+  m.def("reduce_min_opt_out", &at::native::reduce_min_opt_out, "reduce_min_opt_out");
+  m.def("index_select_opt", &at::native::index_select_opt, "index_select_opt");
+  m.def("index_select_opt_out", &at::native::index_select_opt_out, "index_select_opt_out");
+  m.def("index_add_opt", &at::native::index_add_opt, "index_add_opt",
+        py::arg("dst"), py::arg("dim"), py::arg("index"), py::arg("src"),
+        py::arg("assume_unique") = false);
+  m.def("index_add_opt_out", &at::native::index_add_opt_out, "index_add_opt_out",
+        py::arg("dst"), py::arg("dim"), py::arg("index"), py::arg("src"),
+        py::arg("assume_unique") = false);
+  m.def("embedding_opt", &at::native::embedding_opt, "embedding_opt");
+  m.def("gather_opt", &at::native::gather_opt, "gather_opt",
+        py::arg("dst"), py::arg("index"), py::arg("src"), py::arg("special") = false);
+  m.def("scatter_opt", &at::native::scatter_opt, "scatter_opt",
+        py::arg("dst"), py::arg("index"), py::arg("src"), py::arg("special") = false);
+  m.def("topk_power2_opt", &at::native::topk_power2_opt, "topk_power2_opt");
   m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
   m.def("add_int8", &at::native::add_int8, "add_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
   m.def("sub_int8", &at::native::sub_int8, "sub_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
@@ -1882,6 +1956,17 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
  m.def("swiglu_oai_int8_quant_contiguous", &at::native::swiglu_oai_int8_quant_contiguous, "BF16-rounded OAI row INT8 quantization");
  m.def("swiglu_oai_int8_quant_masked", &at::native::swiglu_oai_int8_quant_masked, "Masked BF16-rounded OAI row INT8 quantization with zero/unit padding");
  m.def("swiglu_oai_fp8_quant_contiguous", &at::native::swiglu_oai_fp8_quant_contiguous, "Contiguous BF16 OAI activation and per-token E4M3FN quantization", pybind11::arg("input"), pybind11::arg("alpha") = 1.702, pybind11::arg("beta") = 1.0, pybind11::arg("limit") = 7.0);
+ m.def("add_rms_norm_dynamic_quant", &at::native::add_rms_norm_dynamic_quant, "add_rms_norm_dynamic_quant",
+       py::arg("hidden_states"),
+       py::arg("norm_weight"),
+       py::arg("smooth_scale"),
+       py::arg("residual"),
+       py::arg("quant_tokens"),
+       py::arg("per_token_scale"),
+       py::arg("after_res"),
+       py::arg("after_norm"),
+       py::arg("output_mode") = 0,
+       py::arg("eps") = 1e-5);
  m.def("moe_swiglu_dynamic_quant", &at::native::moe_swiglu_dynamic_quant, "moe_swiglu_dynamic_quant");  
  m.def("per_token_group_quant_fp8", &at::native::per_token_group_quant_fp8, "per_token_group_quant_fp8");  
  m.def("top_k_per_row_prefill", &at::native::top_k_per_row_prefill, "top_k_per_row_prefill");  

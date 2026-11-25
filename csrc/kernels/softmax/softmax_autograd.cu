@@ -304,7 +304,8 @@ __global__ void softmax_fused_kernel(
         atomicMax(&global_max[row], block_max);
         __threadfence(); 
         atomicAdd(&sync_counters[row], 1);
-        while(*(volatile int*)&sync_counters[row] < blocks_per_row);
+        while(atomicAdd(&sync_counters[row], 0) < blocks_per_row);
+        __threadfence();
     }
     __syncthreads(); 
 
@@ -315,14 +316,15 @@ __global__ void softmax_fused_kernel(
 
 
     float local_sum = 0.0f;
+    float exp_cache[VEC_NUM_PER_THREAD][VEC_SIZE];
     #pragma unroll
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
             float val = to_float_large(loaded_vecs[i].val[k]);
             float res = __expf(val - final_global_max);
+            exp_cache[i][k] = res;
             local_sum += res;
-            from_float_large(loaded_vecs[i].val[k], res);
         }
     }
     
@@ -333,7 +335,8 @@ __global__ void softmax_fused_kernel(
         atomicAdd(&global_sum[row], block_sum);
         __threadfence();
         atomicAdd(&sync_counters[row], 1);
-        while(*(volatile int*)&sync_counters[row] < 2 * blocks_per_row);
+        while(atomicAdd(&sync_counters[row], 0) < 2 * blocks_per_row);
+        __threadfence();
     }
     __syncthreads();
 
@@ -348,8 +351,7 @@ __global__ void softmax_fused_kernel(
         VecType out_vec;
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val_exp = to_float_large(loaded_vecs[i].val[k]);
-            float res = val_exp * inv_global_sum;
+            float res = exp_cache[i][k] * inv_global_sum;
             from_float_large(out_vec.val[k], res);
         }
         
@@ -427,6 +429,7 @@ __global__ void softmax_fused_kernel_block_align(
         atomicAdd(&sync_counters[row], 1);
         
         while(atomicAdd(&sync_counters[row], 0) < blocks_per_row);
+        __threadfence();
     }
     __syncthreads(); 
 
@@ -436,14 +439,15 @@ __global__ void softmax_fused_kernel_block_align(
     float final_global_max = shared_val;
 
     float local_sum = 0.0f;
+    float exp_cache[VEC_NUM_PER_THREAD][VEC_SIZE];
     #pragma unroll
     for(int i = 0; i < VEC_NUM_PER_THREAD; ++i) {
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
             float val = to_float_large(loaded_vecs[i].val[k]);
             float res = __expf(val - final_global_max);
+            exp_cache[i][k] = res;
             local_sum += res;
-            from_float_large(loaded_vecs[i].val[k], res);
         }
     }
     
@@ -461,6 +465,7 @@ __global__ void softmax_fused_kernel_block_align(
 
   
         while(atomicAdd(&sync_counters[row], 0) < 2 * blocks_per_row);
+        __threadfence();
     }
     __syncthreads();
 
@@ -474,8 +479,7 @@ __global__ void softmax_fused_kernel_block_align(
         VecType out_vec;
         #pragma unroll
         for(int k = 0; k < VEC_SIZE; ++k) {
-            float val_exp = to_float_large(loaded_vecs[i].val[k]);
-            float res = val_exp * inv_global_sum;
+            float res = exp_cache[i][k] * inv_global_sum;
             from_float_large(out_vec.val[k], res);
         }
         
@@ -634,7 +638,7 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
         int element_size = input_.element_size(); 
         int vec_size_conf = (element_size == 4) ? 4 : 8;
 
-        if (cols > 16384 && cols % vec_size_conf == 0 && is_supported_type) {
+        if (cols >= 16384 && cols % vec_size_conf == 0 && is_supported_type) {
              auto output = at::empty_like(input_);
     
              auto stream = at::cuda::getCurrentCUDAStream().stream();
@@ -671,7 +675,7 @@ Tensor fuse_softmax_forward_autograd(const Tensor &input, const int64_t dim, con
                  });
              }
              return output;
-        }else if(cols <= 16384 && is_supported_type && cols % 8 == 0){
+        }else if(cols < 16384 && is_supported_type && cols % 8 == 0){
              auto output = at::empty_like(input_);
              auto stream = at::cuda::getCurrentCUDAStream().stream();
 

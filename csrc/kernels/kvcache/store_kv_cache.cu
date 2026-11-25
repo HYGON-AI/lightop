@@ -7,6 +7,12 @@
 #include <c10/core/ScalarType.h>
 #include <hip/hip_bf16.h>
 #include <algorithm> // For std::min
+#include <cstdint>
+
+#if defined(USE_ROCM) && __has_include(<hip/hip_fp8.h>)
+#include <hip/hip_fp8.h>
+#define LIGHTOP_HAS_HIP_FP8_HW_CVT 1
+#endif
 
 namespace at {
 namespace native {
@@ -18,11 +24,145 @@ struct alignas(sizeof(T) * N) Vector {
 };
 
 
+
 enum class KVCacheDataType {
-    kAuto, // 直接复制，不量化
-    kInt8, // INT8 量化
+    kAuto,    // 直接复制，不量化
+    kInt8,    // INT8 量化
+    kFp8E4M3, // float8_e4m3fn 静态量化（对齐 custom_ops）
 };
 
+__device__ __forceinline__ uint32_t fp32_bits_u32(float f) {
+    return __builtin_bit_cast(uint32_t, f);
+}
+
+// FP32 -> FP8 E4M3, round nearest-even, satfinite (same numeric style as CUTLASS / custom_ops).
+__device__ __forceinline__ uint8_t float_to_fp8_e4m3_rne(float flt) {
+    uint32_t s = fp32_bits_u32(flt);
+    uint8_t sign = uint8_t((s >> 24) & 0x80u);
+    int32_t exp = int32_t((s >> 23) & 0xffu) - 127;
+    int32_t mantissa = int32_t(s & 0x7fffffu);
+    uint8_t u = 0;
+
+    constexpr uint8_t kF8_NaN = 0x7f;
+    constexpr uint8_t FP8_MAX_FLT = 0x7e;
+    constexpr int FP8_MIN_EXPONENT = -6;
+    constexpr int FP8_MAX_EXPONENT = 7;
+    constexpr int FP8_EXPONENT_BIAS = 7;
+    constexpr int FP8_NUM_MANTISSA_BITS = 3;
+    constexpr int FP8_NUM_EXPONENT_BITS = 4;
+    constexpr uint8_t FP8_EXPONENT_MASK = (1u << FP8_NUM_EXPONENT_BITS) - 1u;
+    constexpr uint8_t FP8_MANTISSA_MASK = (1u << FP8_NUM_MANTISSA_BITS) - 1u;
+    constexpr int FP32_NUM_MANTISSA_BITS = 23;
+
+    if (flt != flt) {
+        return uint8_t(sign | kF8_NaN);
+    }
+    uint32_t abs_bits = s & 0x7fffffffu;
+    if (abs_bits == 0x7f800000u) {
+        return uint8_t(sign | FP8_MAX_FLT);
+    }
+
+    bool skip_sign = false;
+    bool may_be_nan = false;
+    int sticky_bit = 0;
+
+    if ((exp >= FP8_MIN_EXPONENT) && (exp <= FP8_MAX_EXPONENT)) {
+        exp = exp + FP8_EXPONENT_BIAS;
+        u = uint8_t((uint32_t(exp) & FP8_EXPONENT_MASK) << FP8_NUM_MANTISSA_BITS);
+        u = uint8_t(u | (mantissa >> (FP32_NUM_MANTISSA_BITS - FP8_NUM_MANTISSA_BITS)));
+    } else if (exp < FP8_MIN_EXPONENT) {
+        int rshift = (FP8_MIN_EXPONENT - exp);
+        if (rshift < 32) {
+            mantissa |= (1 << FP32_NUM_MANTISSA_BITS);
+            sticky_bit = ((mantissa & ((1 << rshift) - 1)) != 0) ? 1 : 0;
+            mantissa = (mantissa >> rshift);
+            u = uint8_t((mantissa >> (FP32_NUM_MANTISSA_BITS - FP8_NUM_MANTISSA_BITS)) & FP8_MANTISSA_MASK);
+        } else {
+            mantissa = 0;
+            u = 0;
+        }
+    } else {
+        if (exp == (FP8_MAX_EXPONENT + 1)) {
+            uint8_t mantissa_tmp = uint8_t(mantissa >> (FP32_NUM_MANTISSA_BITS - FP8_NUM_MANTISSA_BITS));
+            if (mantissa_tmp < FP8_MANTISSA_MASK) {
+                exp = exp + FP8_EXPONENT_BIAS;
+                u = uint8_t(uint32_t(exp) << FP8_NUM_MANTISSA_BITS) | mantissa_tmp;
+                may_be_nan = (mantissa_tmp == (FP8_MANTISSA_MASK - 1));
+            } else {
+                return uint8_t(sign | FP8_MAX_FLT);
+            }
+        } else {
+            return uint8_t(sign | FP8_MAX_FLT);
+        }
+    }
+
+    const int NUM_BITS_SHIFT = FP32_NUM_MANTISSA_BITS - (FP8_NUM_MANTISSA_BITS + 1);
+    int round_bit = ((mantissa >> NUM_BITS_SHIFT) & 1);
+    sticky_bit |= ((mantissa & ((1 << NUM_BITS_SHIFT) - 1)) != 0) ? 1 : 0;
+
+    if ((round_bit && sticky_bit) || (round_bit && (u & 1))) {
+        u = uint8_t(u + 1);
+        if (may_be_nan) {
+            skip_sign = true;
+        }
+    }
+
+    if (u > FP8_MAX_FLT) {
+        u = uint8_t(sign | FP8_MAX_FLT);
+    }
+
+    if (!skip_sign) {
+        u |= sign;
+    }
+
+    return u;
+}
+
+__device__ __forceinline__ uint8_t float_to_fp8_e4m3_scaled_fast(float q) {
+#if defined(LIGHTOP_HAS_HIP_FP8_HW_CVT)
+    const __hip_fp8_storage_t bits = __hip_cvt_float_to_fp8(q, __HIP_SATFINITE, __HIP_E4M3);
+    return static_cast<uint8_t>(bits);
+#else
+    return float_to_fp8_e4m3_rne(q);
+#endif
+}
+
+
+// Vec_Size is always 1/2/4/8/16 in launches: multiply -> shift at compile time.
+template <int Vec_Size>
+__device__ __forceinline__ constexpr int store_kv_vec_shift() {
+    static_assert(Vec_Size >= 1 && (Vec_Size & (Vec_Size - 1)) == 0,
+                  "Vec_Size must be a power of 2");
+    if constexpr (Vec_Size == 1) return 0;
+    else if constexpr (Vec_Size == 2) return 1;
+    else if constexpr (Vec_Size == 4) return 2;
+    else if constexpr (Vec_Size == 8) return 3;
+    else if constexpr (Vec_Size == 16) return 4;
+    else return 0;
+}
+
+// Runtime positive dim: if power-of-2, / and % become >> and & (safe & exact).
+__device__ __forceinline__ void store_kv_div_mod_dim(int idx, int dim, int& q, int& r) {
+    if ((dim & (dim - 1)) == 0) {
+        const int shift = __builtin_ctz(static_cast<unsigned>(dim));
+        q = idx >> shift;
+        r = idx & (dim - 1);
+    } else {
+        q = idx / dim;
+        r = idx % dim;
+    }
+}
+
+__device__ __forceinline__ void store_kv_div_mod_dim64(int64_t idx, int dim, int& q, int& r) {
+    if ((dim & (dim - 1)) == 0) {
+        const int shift = __builtin_ctz(static_cast<unsigned>(dim));
+        q = static_cast<int>(idx >> shift);
+        r = static_cast<int>(idx & static_cast<int64_t>(dim - 1));
+    } else {
+        q = static_cast<int>(idx / dim);
+        r = static_cast<int>(idx % dim);
+    }
+}
 
 
 // 用于处理 batch_size > 1 的情况。每个块处理一个请求。
@@ -48,10 +188,11 @@ __global__ void store_kv_cache_batch_kernel(
     const int total_elements_to_process = q_len * kv_head_num * head_dim;
 
     for (int i = threadIdx.x * Vec_Size; i < total_elements_to_process; i += blockDim.x * Vec_Size) {
-        const int token_idx_in_q = i / (kv_head_num * head_dim);
-        const int remainder = i % (kv_head_num * head_dim);
-        const int head_idx_in_kv = remainder / head_dim;
-        const int val_idx_in_head = remainder % head_dim;
+        const int elems_per_tok = kv_head_num * head_dim;
+        int token_idx_in_q, remainder;
+        store_kv_div_mod_dim(i, elems_per_tok, token_idx_in_q, remainder);
+        int head_idx_in_kv, val_idx_in_head;
+        store_kv_div_mod_dim(remainder, head_dim, head_idx_in_kv, val_idx_in_head);
 
         const int64_t abs_token_idx = q_token_offset + token_idx_in_q;
         const int64_t k_head_idx = q_head_num + head_idx_in_kv;
@@ -83,7 +224,20 @@ __global__ void store_kv_cache_batch_kernel(
                 k_vec_out.val[j] = static_cast<cache_t>(k_quantized_int);
                 v_vec_out.val[j] = static_cast<cache_t>(v_quantized_int);
             }
-            *k_dst_vec_ptr = k_vec_out; *v_dst_vec_ptr = v_vec_out;
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
         }
     }
 }
@@ -135,7 +289,20 @@ __global__ void store_kv_cache_head_centric_kernel(
                 k_vec_out.val[j] = static_cast<cache_t>(k_quantized_int);
                 v_vec_out.val[j] = static_cast<cache_t>(v_quantized_int);
             }
-            *k_dst_vec_ptr = k_vec_out; *v_dst_vec_ptr = v_vec_out;
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
         }
     }
 }
@@ -160,8 +327,8 @@ __global__ void store_kv_cache_token_centric_kernel(
     const int total_elements_per_token = kv_head_num * head_dim;
     //一个block处理一个token
     for (int i = threadIdx.x * Vec_Size; i < total_elements_per_token; i += blockDim.x * Vec_Size) {
-        const int head_idx_in_kv = i / head_dim;
-        const int val_idx_in_head = i % head_dim;
+        int head_idx_in_kv, val_idx_in_head;
+        store_kv_div_mod_dim(i, head_dim, head_idx_in_kv, val_idx_in_head);
 
         const int64_t abs_token_idx = q_token_offset + token_idx_in_q;
         const int64_t k_head_idx = q_head_num + head_idx_in_kv;
@@ -191,10 +358,106 @@ __global__ void store_kv_cache_token_centric_kernel(
                 k_vec_out.val[j] = static_cast<cache_t>(k_quantized_int);
                 v_vec_out.val[j] = static_cast<cache_t>(v_quantized_int);
             }
-            *k_dst_vec_ptr = k_vec_out; *v_dst_vec_ptr = v_vec_out;
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
         }
     }
 }
+
+
+// Prefill flat fused (batch=1): 1D grid over q_len*kvh*(hd/Vec).
+// Used when token-centric would launch a tiny block (TP-sharded kvh=1/2).
+// Keeps lightop dispatch; no fixed-nt template explosion.
+template <typename scalar_t, typename cache_t, KVCacheDataType kv_dt, int Vec_Size>
+__global__ void store_kv_cache_flat_prefill_kernel(
+    const scalar_t* __restrict__ packed_qkv, cache_t* __restrict__ k_cache, cache_t* __restrict__ v_cache,
+    const int32_t* __restrict__ accum_q_lens,
+    const int32_t* __restrict__ cache_lens, const int32_t* __restrict__ cache_slot_ids,
+    const float* __restrict__ k_scale, const float* __restrict__ v_scale,
+    int q_head_num, int kv_head_num, int head_dim, int max_kv_len, int q_len
+) {
+    using scalar_vector_t = Vector<scalar_t, Vec_Size>;
+    using cache_vector_t = Vector<cache_t, Vec_Size>;
+
+    const int work_per_head = head_dim / Vec_Size;
+    const int64_t total_work = (int64_t)q_len * kv_head_num * work_per_head;
+    const int64_t linear_id = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
+    if (linear_id >= total_work) return;
+
+    const int q_token_offset = accum_q_lens[0];
+    const int cache_start_pos = cache_lens[0];
+    const int cache_slot_id = cache_slot_ids[0];
+    const int total_head_num = q_head_num + 2 * kv_head_num;
+
+    int token_idx_in_q, head_idx_in_kv, d_chunk;
+    {
+        int rem;
+        store_kv_div_mod_dim64(linear_id, work_per_head, rem, d_chunk);
+        store_kv_div_mod_dim(rem, kv_head_num, token_idx_in_q, head_idx_in_kv);
+    }
+    const int val_idx_in_head = d_chunk * Vec_Size;
+
+    const int64_t abs_token_idx = q_token_offset + token_idx_in_q;
+    const int64_t k_head_idx = q_head_num + head_idx_in_kv;
+    const int64_t v_head_idx = q_head_num + kv_head_num + head_idx_in_kv;
+    const int64_t k_src_offset = abs_token_idx * total_head_num * head_dim + k_head_idx * head_dim + val_idx_in_head;
+    const int64_t v_src_offset = abs_token_idx * total_head_num * head_dim + v_head_idx * head_dim + val_idx_in_head;
+
+    const int64_t dst_token_idx = cache_start_pos + token_idx_in_q;
+    const int64_t dst_offset = (int64_t)cache_slot_id * kv_head_num * max_kv_len * head_dim +
+                                 (int64_t)head_idx_in_kv * max_kv_len * head_dim +
+                                 (int64_t)dst_token_idx * head_dim +
+                                 val_idx_in_head;
+
+    const scalar_vector_t k_vec_in = *reinterpret_cast<const scalar_vector_t*>(packed_qkv + k_src_offset);
+    const scalar_vector_t v_vec_in = *reinterpret_cast<const scalar_vector_t*>(packed_qkv + v_src_offset);
+    auto* k_dst_vec_ptr = reinterpret_cast<cache_vector_t*>(k_cache + dst_offset);
+    auto* v_dst_vec_ptr = reinterpret_cast<cache_vector_t*>(v_cache + dst_offset);
+
+    if constexpr (kv_dt == KVCacheDataType::kAuto) {
+        *k_dst_vec_ptr = *reinterpret_cast<const cache_vector_t*>(&k_vec_in);
+        *v_dst_vec_ptr = *reinterpret_cast<const cache_vector_t*>(&v_vec_in);
+    } else if constexpr (kv_dt == KVCacheDataType::kInt8) {
+        cache_vector_t k_vec_out, v_vec_out;
+        #pragma unroll
+        for (int j = 0; j < Vec_Size; ++j) {
+            const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+            const int32_t k_quantized_int = static_cast<int32_t>(
+                roundf(static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx]));
+            const int32_t v_quantized_int = static_cast<int32_t>(
+                roundf(static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx]));
+            k_vec_out.val[j] = static_cast<cache_t>(k_quantized_int);
+            v_vec_out.val[j] = static_cast<cache_t>(v_quantized_int);
+        }
+        *k_dst_vec_ptr = k_vec_out;
+        *v_dst_vec_ptr = v_vec_out;
+    } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+        cache_vector_t k_vec_out, v_vec_out;
+        #pragma unroll
+        for (int j = 0; j < Vec_Size; ++j) {
+            const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+            const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+            const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+            k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+            v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+        }
+        *k_dst_vec_ptr = k_vec_out;
+        *v_dst_vec_ptr = v_vec_out;
+    }
+}
+
 
 void store_kv_cache(
     torch::Tensor packed_qkv, torch::Tensor& K_cache, torch::Tensor& V_cache,
@@ -219,7 +482,7 @@ void store_kv_cache(
 
     #define LAUNCH_KERNEL_VEC(kernel_name, grid, block, scalar_t, cache_t, kv_dt, VEC_SIZE) \
         kernel_name<scalar_t, cache_t, kv_dt, VEC_SIZE><<<grid, block>>>( \
-            packed_qkv.data_ptr<scalar_t>(), K_cache.data_ptr<cache_t>(), V_cache.data_ptr<cache_t>(), \
+            packed_qkv.data_ptr<scalar_t>(), reinterpret_cast<cache_t*>(K_cache.data_ptr()), reinterpret_cast<cache_t*>(V_cache.data_ptr()), \
             q_lens.data_ptr<int32_t>(), accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>(), cache_slot_ids.data_ptr<int32_t>(), \
             k_scale.data_ptr<float>(), v_scale.data_ptr<float>(), \
             q_head_num, kv_head_num, head_dim, max_kv_len)
@@ -234,7 +497,8 @@ void store_kv_cache(
     } while(0)
 
     if (batch_size == 1) {
-        const int q_len_val = q_lens.item<int32_t>();
+        // batch==1: packed_qkv.size(0) == q_len; avoid q_lens.item() DtoH sync
+        const int q_len_val = static_cast<int>(packed_qkv.size(0));
         if (q_len_val == 1) { // 单请求解码 (q_len=1)
             const dim3 grid(kv_head_num);
             const int threads_needed = (head_dim + vec_size - 1) / vec_size;
@@ -245,19 +509,66 @@ void store_kv_cache(
             } else if (kv_cache_dtype_str == "int8") {
                 if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_head_centric_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8); }
                 else { TORCH_CHECK(false, "Unsupported input dtype for int8 mode"); }
+            } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+                if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_head_centric_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3); }
+                else { TORCH_CHECK(false, "Unsupported input dtype for fp8 mode"); }
             } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
         } else { // 单请求预填充 (q_len>1)
-            const dim3 grid(q_len_val);
             const int elements_per_token = kv_head_num * head_dim;
             const int threads_needed = (elements_per_token + vec_size - 1) / vec_size;
-            const dim3 block(std::min(1024, threads_needed));
-            if (kv_cache_dtype_str == "auto") {
-                if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_token_centric_kernel, grid, block, at::BFloat16, at::BFloat16, KVCacheDataType::kAuto); }
-                else { TORCH_CHECK(false, "Unsupported dtype for auto mode"); }
-            } else if (kv_cache_dtype_str == "int8") {
-                if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_token_centric_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8); }
-                else { TORCH_CHECK(false, "Unsupported input dtype for int8 mode"); }
-            } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
+            // token-centric under-occupies when kvh is small (TP shard kvh=1/2).
+            const bool use_flat_prefill = (threads_needed < 64);
+            if (use_flat_prefill) {
+                // Quant: vec4 matches custom fused packing; bf16: vec8.
+                int flat_vec = vec_size;
+                if (kv_cache_dtype_str != "auto" && head_dim % 4 == 0) { flat_vec = 4; }
+                else if (kv_cache_dtype_str == "auto" && head_dim % 8 == 0) { flat_vec = 8; }
+                const int work_per_head = head_dim / flat_vec;
+                const int64_t total_work = (int64_t)q_len_val * kv_head_num * work_per_head;
+                int block_size = (q_len_val >= 4096) ? 512 : 256;
+                const int num_blocks = (int)((total_work + block_size - 1) / block_size);
+                const dim3 grid(num_blocks);
+                const dim3 block(block_size);
+                #define LAUNCH_FLAT(scalar_t, cache_t, kv_dt, VEC_SIZE) \
+                    store_kv_cache_flat_prefill_kernel<scalar_t, cache_t, kv_dt, VEC_SIZE><<<grid, block>>>( \
+                        packed_qkv.data_ptr<scalar_t>(), reinterpret_cast<cache_t*>(K_cache.data_ptr()), reinterpret_cast<cache_t*>(V_cache.data_ptr()), \
+                        accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>(), cache_slot_ids.data_ptr<int32_t>(), \
+                        k_scale.data_ptr<float>(), v_scale.data_ptr<float>(), \
+                        q_head_num, kv_head_num, head_dim, max_kv_len, q_len_val)
+                #define LAUNCH_FLAT_VEC(scalar_t, cache_t, kv_dt) \
+                do { \
+                    if (flat_vec == 16) { LAUNCH_FLAT(scalar_t, cache_t, kv_dt, 16); } \
+                    else if (flat_vec == 8) { LAUNCH_FLAT(scalar_t, cache_t, kv_dt, 8); } \
+                    else if (flat_vec == 4) { LAUNCH_FLAT(scalar_t, cache_t, kv_dt, 4); } \
+                    else if (flat_vec == 2) { LAUNCH_FLAT(scalar_t, cache_t, kv_dt, 2); } \
+                    else { LAUNCH_FLAT(scalar_t, cache_t, kv_dt, 1); } \
+                } while (0)
+                if (kv_cache_dtype_str == "auto") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_FLAT_VEC(at::BFloat16, at::BFloat16, KVCacheDataType::kAuto); }
+                    else { TORCH_CHECK(false, "Unsupported dtype for auto mode"); }
+                } else if (kv_cache_dtype_str == "int8") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_FLAT_VEC(at::BFloat16, int8_t, KVCacheDataType::kInt8); }
+                    else { TORCH_CHECK(false, "Unsupported input dtype for int8 mode"); }
+                } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_FLAT_VEC(at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3); }
+                    else { TORCH_CHECK(false, "Unsupported input dtype for fp8 mode"); }
+                } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
+                #undef LAUNCH_FLAT_VEC
+                #undef LAUNCH_FLAT
+            } else {
+                const dim3 grid(q_len_val);
+                const dim3 block(std::min(1024, threads_needed));
+                if (kv_cache_dtype_str == "auto") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_token_centric_kernel, grid, block, at::BFloat16, at::BFloat16, KVCacheDataType::kAuto); }
+                    else { TORCH_CHECK(false, "Unsupported dtype for auto mode"); }
+                } else if (kv_cache_dtype_str == "int8") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_token_centric_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8); }
+                    else { TORCH_CHECK(false, "Unsupported input dtype for int8 mode"); }
+                } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+                    if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_token_centric_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3); }
+                    else { TORCH_CHECK(false, "Unsupported input dtype for fp8 mode"); }
+                } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
+            }
         }
     } else { // 批处理 (batch_size > 1)
         const dim3 grid(batch_size);
@@ -268,6 +579,9 @@ void store_kv_cache(
         } else if (kv_cache_dtype_str == "int8") {
             if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_batch_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8); }
             else { TORCH_CHECK(false, "Unsupported input dtype for int8 mode"); }
+        } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+            if (packed_qkv.scalar_type() == at::ScalarType::BFloat16) { LAUNCH_KERNEL(store_kv_cache_batch_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3); }
+            else { TORCH_CHECK(false, "Unsupported input dtype for fp8 mode"); }
         } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
     }
 
@@ -299,10 +613,11 @@ __global__ void store_kv_cache_paged_batch_kernel(
 
     for (int i = threadIdx.x * Vec_Size; i < total_elements_to_process; i += blockDim.x * Vec_Size) {
        
-        const int token_idx_in_q = i / (kv_head_num * head_dim);
-        const int remainder = i % (kv_head_num * head_dim);
-        const int head_idx_in_kv = remainder / head_dim;
-        const int val_idx_in_head = remainder % head_dim;
+        const int elems_per_tok = kv_head_num * head_dim;
+        int token_idx_in_q, remainder;
+        store_kv_div_mod_dim(i, elems_per_tok, token_idx_in_q, remainder);
+        int head_idx_in_kv, val_idx_in_head;
+        store_kv_div_mod_dim(remainder, head_dim, head_idx_in_kv, val_idx_in_head);
 
  
         const int64_t abs_token_idx = q_token_offset + token_idx_in_q;
@@ -313,8 +628,8 @@ __global__ void store_kv_cache_paged_batch_kernel(
 
         const int64_t dst_token_idx = cache_start_pos + token_idx_in_q;
 
-        const int logical_block_idx = dst_token_idx / block_size;
-        const int offset_in_block = dst_token_idx % block_size;
+        int logical_block_idx, offset_in_block;
+        store_kv_div_mod_dim64(dst_token_idx, block_size, logical_block_idx, offset_in_block);
 
         const int physical_block_id = block_table[batch_idx * max_blocks_per_seq + logical_block_idx];
 
@@ -344,6 +659,18 @@ __global__ void store_kv_cache_paged_batch_kernel(
             }
             *k_dst_vec_ptr = k_vec_out;
             *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
         }
     }
 }
@@ -365,8 +692,8 @@ __global__ void store_kv_cache_paged_head_centric_kernel(
     const int q_token_offset = accum_q_lens[0];
     const int cache_start_pos = cache_lens[0]; 
 
-    const int logical_block_idx = cache_start_pos / block_size;
-    const int offset_in_block = cache_start_pos % block_size;
+    int logical_block_idx, offset_in_block;
+    store_kv_div_mod_dim(cache_start_pos, block_size, logical_block_idx, offset_in_block);
 
     const int physical_block_id = block_table[logical_block_idx];
 
@@ -406,6 +733,18 @@ __global__ void store_kv_cache_paged_head_centric_kernel(
             }
             *k_dst_vec_ptr = k_vec_out;
             *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
         }
     }
 }
@@ -429,14 +768,14 @@ __global__ void store_kv_cache_paged_token_centric_kernel(
     const int total_elements_per_token = kv_head_num * head_dim;
 
     const int64_t dst_token_idx = cache_start_pos + token_idx_in_q;
-    const int logical_block_idx = dst_token_idx / block_size;
-    const int offset_in_block = dst_token_idx % block_size;
+    int logical_block_idx, offset_in_block;
+    store_kv_div_mod_dim64(dst_token_idx, block_size, logical_block_idx, offset_in_block);
     const int physical_block_id = block_table[logical_block_idx];
 
 
     for (int i = threadIdx.x * Vec_Size; i < total_elements_per_token; i += blockDim.x * Vec_Size) {
-        const int head_idx_in_kv = i / head_dim;
-        const int val_idx_in_head = i % head_dim;
+        int head_idx_in_kv, val_idx_in_head;
+        store_kv_div_mod_dim(i, head_dim, head_idx_in_kv, val_idx_in_head);
 
 
         const int64_t abs_token_idx = q_token_offset + token_idx_in_q;
@@ -468,6 +807,18 @@ __global__ void store_kv_cache_paged_token_centric_kernel(
                 const int32_t v_quantized_int = static_cast<int32_t>(roundf(static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx]));
                 k_vec_out.val[j] = static_cast<cache_t>(k_quantized_int);
                 v_vec_out.val[j] = static_cast<cache_t>(v_quantized_int);
+            }
+            *k_dst_vec_ptr = k_vec_out;
+            *v_dst_vec_ptr = v_vec_out;
+        } else if constexpr (kv_dt == KVCacheDataType::kFp8E4M3) {
+            cache_vector_t k_vec_out, v_vec_out;
+            #pragma unroll
+            for (int j = 0; j < Vec_Size; ++j) {
+                const int scale_idx = head_idx_in_kv * head_dim + val_idx_in_head + j;
+                const float kq = static_cast<float>(k_vec_in.val[j]) * k_scale[scale_idx];
+                const float vq = static_cast<float>(v_vec_in.val[j]) * v_scale[scale_idx];
+                k_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(kq));
+                v_vec_out.val[j] = static_cast<cache_t>(float_to_fp8_e4m3_scaled_fast(vq));
             }
             *k_dst_vec_ptr = k_vec_out;
             *v_dst_vec_ptr = v_vec_out;
@@ -508,7 +859,7 @@ void store_kv_cache_paged(
     #define LAUNCH_KERNEL_VEC(kernel_name, grid, block, scalar_t, cache_t, kv_dt, VEC_SIZE, ...) \
         kernel_name<scalar_t, cache_t, kv_dt, VEC_SIZE><<<grid, block>>>( \
             key.data_ptr<scalar_t>(), value.data_ptr<scalar_t>(), \
-            K_cache.data_ptr<cache_t>(), V_cache.data_ptr<cache_t>(), \
+            reinterpret_cast<cache_t*>(K_cache.data_ptr()), reinterpret_cast<cache_t*>(V_cache.data_ptr()), \
             __VA_ARGS__, \
             block_table.data_ptr<int32_t>(), \
             k_scale.data_ptr<float>(), v_scale.data_ptr<float>(), \
@@ -524,8 +875,8 @@ void store_kv_cache_paged(
     } while(0)
 
     if (batch_size == 1) {
-        const int q_len_val = q_lens.item<int32_t>();
-        const auto common_args = { accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>() };
+        // batch==1: key.size(0) == q_len; avoid q_lens.item() DtoH sync
+        const int q_len_val = static_cast<int>(key.size(0));
         if (q_len_val == 1) {
             const dim3 grid(kv_head_num);
             const int threads_needed = (head_dim + vec_size - 1) / vec_size;
@@ -536,6 +887,9 @@ void store_kv_cache_paged(
             } else if (kv_cache_dtype_str == "int8") {
                 TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for int8 mode");
                 LAUNCH_KERNEL(store_kv_cache_paged_head_centric_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8, accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
+            } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+                TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for fp8 mode");
+                LAUNCH_KERNEL(store_kv_cache_paged_head_centric_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3, accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
             } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
         } else { 
             const dim3 grid(q_len_val);
@@ -548,6 +902,9 @@ void store_kv_cache_paged(
             } else if (kv_cache_dtype_str == "int8") {
                 TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for int8 mode");
                 LAUNCH_KERNEL(store_kv_cache_paged_token_centric_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8, accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
+            } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+                TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for fp8 mode");
+                LAUNCH_KERNEL(store_kv_cache_paged_token_centric_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3, accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
             } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
         }
     } else { 
@@ -559,6 +916,9 @@ void store_kv_cache_paged(
         } else if (kv_cache_dtype_str == "int8") {
             TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for int8 mode");
             LAUNCH_KERNEL(store_kv_cache_paged_batch_kernel, grid, block, at::BFloat16, int8_t, KVCacheDataType::kInt8, q_lens.data_ptr<int32_t>(), accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
+        } else if (kv_cache_dtype_str == "fp8" || kv_cache_dtype_str == "fp8_e4m3" || kv_cache_dtype_str == "float8" || kv_cache_dtype_str == "float8_e4m3fn") {
+            TORCH_CHECK(key.scalar_type() == at::ScalarType::BFloat16, "Unsupported input dtype for fp8 mode");
+            LAUNCH_KERNEL(store_kv_cache_paged_batch_kernel, grid, block, at::BFloat16, uint8_t, KVCacheDataType::kFp8E4M3, q_lens.data_ptr<int32_t>(), accum_q_lens.data_ptr<int32_t>(), cache_lens.data_ptr<int32_t>());
         } else { TORCH_CHECK(false, "Unsupported kv_cache_dtype"); }
     }
 
