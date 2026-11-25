@@ -44,7 +44,11 @@ struct Tile32x128 {
     static constexpr int Waves = 4;
     static constexpr int NTilesPerWave = 2;
     static constexpr int MTilesPerWave = 2;
-    static constexpr int QSplits = 16;
+    static constexpr int QSplits = 16;      // Upper bound on Q shards per K tile.
+    // Use the fewest Q shards (a power of two) that still launch this many
+    // CTAs per CU: each extra shard decodes the K tile again. This balances
+    // K reuse for long sequences against parallel work for short sequences.
+    static constexpr int TargetCtasPerCU = 48;
 };
 
 static_assert(wrap::is_supported_v<bf16_t, Tile32x128::M, Tile32x128::K,
@@ -211,30 +215,35 @@ __device__ __forceinline__ floatx4 mmac_bf16_inline(
 #endif
 }
 
-// Keep four independent M16xN16 accumulators in flight. For each K32
-// fragment, issue the first BF16 MMAC for every dot before its dependent
-// second MMAC. This follows m64.cu's independent-dot latency coverage while
-// retaining the even-wrap Q stage.
+// Preserve the original K32 fragment order. Changing the channels in each
+// MMAC changes intermediate FP32 overflow, even when all Q/K values are finite.
+__device__ __forceinline__ uint32x4_t ds_read_q_step(
+    bf16_t q_stage[][Tile32x128::M * Tile32x128::PanelK], int mu, int t) {
+    const int lane = threadIdx.x % 64;
+    const int index = wrap::lds_elem_index_from_mk<bf16_t, Tile32x128::M, Tile32x128::K,
+                                                   Tile32x128::PanelK, Tile32x128::Waves>(
+        mu * 16 + lane % 16, (t & 1) * 32 + (lane / 16) * 8);
+    return *reinterpret_cast<const uint32x4_t*>(q_stage[t >> 1] + index);
+}
+
+// Keep four independent M16xN16 accumulators in flight. For each step pair,
+// issue the first BF16 MMAC for every dot before its dependent second MMAC.
+// Independent dots cover MMAC latency while retaining the even-wrap Q stage. `after_first_frag` runs once the first
+// fragment's MMACs are issued, so independent VALU work (the previous head's
+// epilogue) is not stuck behind this head's MMAC results.
+template <typename AfterFirstFrag>
 __device__ __forceinline__ void bf16_mmac_head_interleaved(
     bf16_t q_lds[][Tile32x128::M * Tile32x128::PanelK],
-    const uint32x4_t* b_reg, floatx4 (&dot)[2][2], int wave,
-    floatx4 zero_c, const uint32x4_t (&first_a)[2]) {
+    const uint32x4_t* b_reg, floatx4 (&dot)[2][2],
+    floatx4 zero_c, const uint32x4_t (&first_a)[2], AfterFirstFrag&& after_first_frag) {
     uint32x4_t a_reg[2][2];
     a_reg[0][0] = first_a[0];
     a_reg[0][1] = first_a[1];
 #pragma unroll
     for (int frag = 1; frag < 4; ++frag) {
         const int stage = frag & 1;
-        const int panel = frag >> 1;
-        const int k_base = (frag & 1) * 32;
 #pragma unroll
-        for (int mu = 0; mu < 2; ++mu) {
-            a_reg[stage][mu] =
-                detail::even_wrap::ds_read_mmac_tile<
-                    bf16_t, Tile32x128::M, Tile32x128::K,
-                    Tile32x128::PanelK, Tile32x128::Waves>(
-                    q_lds[panel], wave, mu * 16, k_base);
-        }
+        for (int mu = 0; mu < 2; ++mu) a_reg[stage][mu] = ds_read_q_step(q_lds, mu, frag);
         const int previous = stage ^ 1;
         const int previous_frag = frag - 1;
         asm volatile("s_setprio 1" ::: "memory");
@@ -256,6 +265,7 @@ __device__ __forceinline__ void bf16_mmac_head_interleaved(
             }
         }
         asm volatile("s_setprio 0" ::: "memory");
+        if (frag == 1) after_first_frag();
     }
 
     asm volatile("s_setprio 1" ::: "memory");
@@ -276,7 +286,7 @@ __device__ __forceinline__ void bf16_mmac_head_interleaved(
     asm volatile("s_setprio 0" ::: "memory");
 }
 
-// m64.cu's paired epilogue: expose eight independent max instructions before
+// Paired epilogue: expose eight independent activation instructions before
 // consuming either packet in the weighted sum. The two FP32 lanes share W.
 __device__ __forceinline__ void accum_relu_paired(
     floatx4 (&sum)[2][2], const floatx4 (&dot)[2][2], float w0, float w1) {
@@ -303,6 +313,59 @@ __device__ __forceinline__ void accum_relu_paired(
         }
     }
 }
+
+// One head of the Q tile via DirectToLDS, in the same even-wrap layout as
+// detail::issue_q_head, with every head-independent part computed once: the
+// buffer resource, per-lane row/column offsets and the wave-uniform M0 LDS
+// targets. Lane L fills the natural 16B chunk L%8 of its panel row.
+// The head offset goes into soffset; rows past the M tail keep
+// voffset -1, which stays out of bounds for every head, as in
+// issue_w_head_soffset.
+struct QHeadIssuer {
+    using Traits = wrap::Traits<bf16_t, Tile32x128::M, Tile32x128::K,
+                                Tile32x128::PanelK, Tile32x128::Waves>;
+    static_assert(Traits::kAccessCnt == 1, "one DirectToLDS access per wave and panel");
+    static constexpr int Panels = Tile32x128::K / Tile32x128::PanelK;
+    uint32x4_t rsrc;
+    int voff[Panels];
+    int m0[2][Panels];  // [stage][panel]
+
+    template <bool RowGuard>
+    __device__ __forceinline__ void init(
+        const bf16_t* q_tile, int stride_q, int valid_rows,
+        bf16_t (&q_lds)[2][Panels][Tile32x128::M * Tile32x128::PanelK]) {
+        // With one access per wave, the issue index is the wave index.
+        const int wave = __builtin_amdgcn_readfirstlane(threadIdx.x / 64);
+        const int lane = threadIdx.x % 64;
+        const int wrap_id = wave % Traits::kNumWraps;
+        const int row = (wave / Traits::kNumWraps) * Traits::kMBlock + wrap_id + (lane / 8) * 4;
+        rsrc = detail::make_buffer_rsrc(q_tile);
+#pragma unroll
+        for (int panel = 0; panel < Panels; ++panel) {
+            const int col = (lane % 8) * Traits::kElemsPerAccess +
+                            panel * Tile32x128::PanelK;
+            voff[panel] = RowGuard && row >= valid_rows
+                              ? -1 : (row * stride_q + col) * Traits::kElemBytes;
+#pragma unroll
+            for (int stage = 0; stage < 2; ++stage)
+                m0[stage][panel] = __builtin_amdgcn_readfirstlane(
+                    static_cast<int>(reinterpret_cast<uintptr_t>(q_lds[stage][panel])) +
+                    wave * Traits::kElemsPerWarpAccess * Traits::kElemBytes +
+                    ((wrap_id * 2) << 16));
+        }
+    }
+
+    __device__ __forceinline__ void issue(int stage, int head) const {
+        const int head_offset = head * Tile32x128::K * Traits::kElemBytes;
+#pragma unroll
+        for (int panel = 0; panel < Panels; ++panel)
+            asm volatile(
+                "s_mov_b32 m0, %1\n\t"
+                "buffer_load_dwordx4 %0, %2, %3 offen offset:0 lds"
+                :: "v"(voff[panel]), "s"(m0[stage][panel]), "s"(rsrc), "s"(head_offset)
+                : "memory");
+    }
+};
 
 template <bool MTail, bool NTail>
 __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
@@ -341,6 +404,7 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
 
     uint32x4_t b_reg[(BK / 32) * NTiles];
     const uint32x4_t k_rsrc = detail::make_buffer_rsrc(k_payload);
+    const detail::PackC4Plan pack_plan = detail::precompute_pack_c_contig4(lane);
 
     // Retain all decoded K fragments in VGPRs across the assigned Q tiles.
     bool k_ready = false;
@@ -360,19 +424,17 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
                 stage_k_half_tile<NTail>(k_lds, k_scale,
                                          tile_n + half * Tile32x128::KHalfN,
                                          num_k_tokens, k_rsrc);
+                // Match ds_read_q_step and the legacy K32 partial sums.
 #pragma unroll
-                for (int panel = 0; panel < BK / WK; ++panel) {
+                for (int t = 0; t < BK / 32; ++t) {
+                    const int panel = t >> 1;
 #pragma unroll
-                    for (int ku = 0; ku < WK / 32; ++ku) {
-                        const int frag = panel * (WK / 32) + ku;
-#pragma unroll
-                        for (int nu = 0; nu < NTiles / 2; ++nu) {
-                            const int row = n_block + nu * 16 + (lane & 15);
-                            const int col = ku * 32 + (lane >> 4) * 8;
-                            const int lds_index = k_lds_elem_index(row, col, panel);
-                            b_reg[frag * NTiles + half * (NTiles / 2) + nu] =
-                                *reinterpret_cast<const uint32x4_t*>(k_lds[panel] + lds_index);
-                        }
+                    for (int nu = 0; nu < NTiles / 2; ++nu) {
+                        const int row = n_block + nu * 16 + (lane & 15);
+                        const int col = (t & 1) * 32 + (lane >> 4) * 8;
+                        const int lds_index = k_lds_elem_index(row, col, panel);
+                        b_reg[t * NTiles + half * (NTiles / 2) + nu] =
+                            *reinterpret_cast<const uint32x4_t*>(k_lds[panel] + lds_index);
                     }
                 }
                 asm volatile("s_waitcnt lgkmcnt(0)\n\ts_barrier" ::: "memory");
@@ -403,14 +465,27 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
         // issue the next head's Q and W before the current head's MMAC. The LDS
         // stages are disjoint; wait for current Q reads and pending VMEM writes
         // before the barrier that makes the next stage visible to every wave.
-        bf16_t* q_tile = const_cast<bf16_t*>(
-            q + static_cast<size_t>(tile_m) * num_heads * BK);
-        detail::issue_q_head<bf16_t, BM, BK, WK, Waves, MTail>(
-            q_lds[0], q_tile, num_heads * BK, 0, valid_m);
+        QHeadIssuer q_issuer;
+        q_issuer.init<MTail>(q + static_cast<size_t>(tile_m) * num_heads * BK,
+                             num_heads * BK, valid_m, q_lds);
+        q_issuer.issue(0, 0);
         float w_raw;
         issue_w_head_soffset(w_raw, w_rsrc, w_row_offset, 0);
         detail::wait_vmcnt0_dep(w_raw);
         asm volatile("s_barrier" ::: "memory");
+
+        // Each head's epilogue is deferred into the next head's MMACs. The
+        // first deferred epilogue adds relu(0)*0 = +0 to the +0-initialized
+        // sums, which leaves them bitwise unchanged; heads still accumulate in
+        // ascending order. Reuse one deferred accumulator set to limit
+        // register liveness; actual allocation depends on the compiler.
+        floatx4 c_prev[MTiles][NTiles];
+#pragma unroll
+        for (int mu = 0; mu < MTiles; ++mu)
+#pragma unroll
+            for (int nu = 0; nu < NTiles; ++nu)
+                c_prev[mu][nu] = {0.f, 0.f, 0.f, 0.f};
+        float w_prev0 = 0.f, w_prev1 = 0.f;
 
         // Q remains BF16 throughout the head loop and MMAC schedule.
         auto compute_head = [&](auto prefetch_tag, int head, int stage) {
@@ -425,20 +500,23 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
             uint32x4_t first_a[2];
 #pragma unroll
             for (int mu = 0; mu < 2; ++mu)
-                first_a[mu] = detail::even_wrap::ds_read_mmac_tile<
-                    bf16_t, BM, BK, WK, Waves>(
-                    q_lds[stage][0], wave, mu * 16, 0);
+                first_a[mu] = ds_read_q_step(q_lds[stage], mu, 0);
             __builtin_amdgcn_sched_barrier(0);
             float next_w_raw;
             if constexpr (prefetch) {
-                detail::issue_q_head<bf16_t, BM, BK, WK, Waves, MTail>(
-                    q_lds[stage ^ 1], q_tile, num_heads * BK, head + 1,
-                    valid_m);
+                q_issuer.issue(stage ^ 1, head + 1);
                 issue_w_head_soffset(next_w_raw, w_rsrc, w_row_offset, head + 1);
             }
             floatx4 c_head[MTiles][NTiles];
-            bf16_mmac_head_interleaved(q_lds[stage], b_reg, c_head, wave, zero_c, first_a);
-            accum_relu_paired(c_out, c_head, w0, w1);
+            bf16_mmac_head_interleaved(q_lds[stage], b_reg, c_head, zero_c, first_a,
+                                       [&] { accum_relu_paired(c_out, c_prev, w_prev0, w_prev1); });
+#pragma unroll
+            for (int mu = 0; mu < MTiles; ++mu)
+#pragma unroll
+                for (int nu = 0; nu < NTiles; ++nu)
+                    c_prev[mu][nu] = c_head[mu][nu];
+            w_prev0 = w0;
+            w_prev1 = w1;
             if constexpr (prefetch) {
                 asm volatile("s_waitcnt lgkmcnt(0)" ::: "memory");
                 detail::wait_vmcnt0_dep(next_w_raw);
@@ -454,10 +532,11 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
         if (head + 1 < num_heads)
             compute_head(std::true_type{}, head, 0);
         compute_head(std::false_type{}, num_heads - 1, (num_heads - 1) & 1);
+        accum_relu_paired(c_out, c_prev, w_prev0, w_prev1);
 
         // The output has local columns, but K staging used absolute K tiles so
         // all 32 Q rows may safely share one K panel even when their ks differ.
-        // The host initializes invalid columns to -inf; only valid values are stored.
+        // The fill pass initializes every column that this kernel leaves unwritten.
 #pragma unroll
         for (int mu = 0; mu < MTiles; ++mu) {
             const int row = tile_m + mu * 16 + (lane % 16);
@@ -466,7 +545,7 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
             const int end = ke[row];
 #pragma unroll
             for (int nu = 0; nu < NTiles; ++nu) {
-                const floatx4 scores = detail::pack_c_contig4(c_out[mu][nu], lane);
+                const floatx4 scores = detail::pack_c_contig4(c_out[mu][nu], pack_plan);
                 const int abs_col = tile_n + (nu / (NTiles / 2)) * Tile32x128::KHalfN +
                                     n_block + (nu % (NTiles / 2)) * 16 + (lane / 16) * 4;
                 const int local_col = abs_col - start;
@@ -497,14 +576,50 @@ __global__ __launch_bounds__(256, 1) void bf16_fp4_persistent128_q16_kernel(
 #endif
 }
 
+// The dense kernel writes row r's local column j exactly when the absolute
+// key ks[r]+j lies in [max(ks[r],0), min(ke[r], written_end)), where
+// written_end is the end of the last K tile. Fill every other column with
+// -inf so the output does not need a full -inf initialization.
+__device__ __forceinline__ void fill_unwritten_logits_row(
+    float* __restrict__ out, const int32_t* __restrict__ ks,
+    const int32_t* __restrict__ ke, int out_width, int64_t written_end) {
+    const int row = blockIdx.x;
+    const int64_t start = ks[row];
+    const int64_t end = ke[row] < written_end ? ke[row] : written_end;
+    const int64_t head = -start;
+    const int head_end = static_cast<int>(head < 0 ? 0 : head > out_width ? out_width : head);
+    const int64_t tail = end - start;
+    const int tail_begin = static_cast<int>(
+        tail < head_end ? head_end : tail > out_width ? out_width : tail);
+    float* dst = out + static_cast<int64_t>(row) * out_width;
+    for (int64_t col = threadIdx.x; col < head_end; col += blockDim.x) dst[col] = -INFINITY;
+    // out_width is 4-aligned, so every row starts 16-byte aligned.
+    const int64_t aligned = (static_cast<int64_t>(tail_begin) + 3) & ~3LL;
+    for (int64_t col = static_cast<int64_t>(tail_begin) + threadIdx.x; col < aligned && col < out_width; col += blockDim.x)
+        dst[col] = -INFINITY;
+    for (int64_t col = aligned + threadIdx.x * 4; col < out_width; col += blockDim.x * 4)
+        *reinterpret_cast<floatx4*>(dst + col) = {-INFINITY, -INFINITY, -INFINITY, -INFINITY};
+}
+
+__global__ __launch_bounds__(256) void fill_unwritten_logits_kernel(
+    float* __restrict__ out, const int32_t* __restrict__ ks,
+    const int32_t* __restrict__ ke, int out_width, int64_t written_end) {
+    fill_unwritten_logits_row(out, ks, ke, out_width, written_end);
+}
+
 template <bool MTail, bool NTail>
 void launch(const bf16_t* q, const uint8_t* k_payload, const int32_t* k_scale,
             const float* weights, const int32_t* ks, const int32_t* ke,
             float* out,
-            int t, int l, int h, int width, hipStream_t stream) {
+            int t, int l, int h, int width, int num_cus, hipStream_t stream) {
     const int q_tiles = (t + Tile32x128::M - 1) / Tile32x128::M;
-    const int q_splits = std::min(Tile32x128::QSplits, q_tiles);
-    const dim3 grid(((l + Tile32x128::N - 1) / Tile32x128::N) * q_splits);
+    const int64_t k_tiles = (l + Tile32x128::N - 1) / Tile32x128::N;
+    int q_splits = 1;
+    while (q_splits < Tile32x128::QSplits &&
+           k_tiles * q_splits < static_cast<int64_t>(Tile32x128::TargetCtasPerCU) * num_cus)
+        q_splits *= 2;
+    q_splits = std::min(q_splits, q_tiles);
+    const dim3 grid(static_cast<uint32_t>(k_tiles * q_splits));
     bf16_fp4_persistent128_q16_kernel<MTail, NTail><<<grid, 256, 0, stream>>>(
         q, k_payload, k_scale, weights, ks, ke, out, t, l, h, width, q_splits);
 }
@@ -727,8 +842,12 @@ torch::Tensor fp8_fp4_mqa_logits(
     TORCH_CHECK(arch.rfind("gfx936", 0) == 0 || arch.rfind("gfx938", 0) == 0,
                 "fp8_fp4_mqa_logits requires gfx936 or gfx938, got ", arch);
 
-    auto out = torch::full({t, max_seqlen_k}, -INFINITY,
-                           q_data.options().dtype(at::kFloat));
+    // Dense compute and the partial fill jointly write every output element.
+    // Candidate and empty-K requests retain their full -inf initialization.
+    const bool dense_writes_all = !candidate_blocks.has_value() && t > 0 && l > 0;
+    auto out = dense_writes_all
+        ? torch::empty({t, max_seqlen_k}, q_data.options().dtype(at::kFloat))
+        : torch::full({t, max_seqlen_k}, -INFINITY, q_data.options().dtype(at::kFloat));
     if (t == 0 || l == 0) return out;
     const auto stream = at::hip::getCurrentHIPStream();
     const auto* q_ptr = reinterpret_cast<const bf16_t*>(q_data.data_ptr());
@@ -761,20 +880,24 @@ torch::Tensor fp8_fp4_mqa_logits(
         return out;
     }
 
+    const int64_t written_end = ((l + Tile32x128::N - 1) / Tile32x128::N) * Tile32x128::N;
+    fill_unwritten_logits_kernel<<<t, 256, 0, stream>>>(
+        out_ptr, ks_ptr, ke_ptr, max_seqlen_k, written_end);
+    TORCH_CHECK(hipGetLastError() == hipSuccess, "MQA logits -inf fill launch failed");
     const bool mtail = t % Tile32x128::M != 0;
     const bool ntail = l % Tile32x128::N != 0;
     if (mtail && ntail)
         launch<true, true>(q_ptr, k_ptr, sf_ptr, w_ptr, ks_ptr, ke_ptr,
-                           out_ptr, t, l, h, max_seqlen_k, stream);
+                           out_ptr, t, l, h, max_seqlen_k, properties.multiProcessorCount, stream);
     else if (mtail)
         launch<true, false>(q_ptr, k_ptr, sf_ptr, w_ptr, ks_ptr, ke_ptr,
-                            out_ptr, t, l, h, max_seqlen_k, stream);
+                            out_ptr, t, l, h, max_seqlen_k, properties.multiProcessorCount, stream);
     else if (ntail)
         launch<false, true>(q_ptr, k_ptr, sf_ptr, w_ptr, ks_ptr, ke_ptr,
-                            out_ptr, t, l, h, max_seqlen_k, stream);
+                            out_ptr, t, l, h, max_seqlen_k, properties.multiProcessorCount, stream);
     else
         launch<false, false>(q_ptr, k_ptr, sf_ptr, w_ptr, ks_ptr, ke_ptr,
-                             out_ptr, t, l, h, max_seqlen_k, stream);
+                             out_ptr, t, l, h, max_seqlen_k, properties.multiProcessorCount, stream);
     TORCH_CHECK(hipGetLastError() == hipSuccess, "BF16/FP4 MQA kernel launch failed");
     return out;
 }
