@@ -50,7 +50,7 @@ struct HipFunctionArgs {
 namespace at {
 namespace native {
 
-template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int BLOCKDIM = 768>
+template <int BLOCKM, int BLOCKN, int BLOCKK, typename OutputType, int BLOCKDIM = 768, bool BALANCED_M_GRID = false, int WGM = 8, bool REBUILT_WGM8 = false, bool NO_EDGE_STORE = false, bool EDGE_CMP_ONLY = false, bool REDUCED_VGPR = false, bool REDUCED_LDS = false, bool PREFETCH_A = false, bool UNIT_SCALE = false, bool FAST_BF16 = false, bool FAST_NOEDGE = false, bool FAST_TRUNC_BF16 = false, bool FAST_TRUNC_NOEDGE = false>
 void _moe_groupgemm_marlin_w4a8_TN_impl(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -64,12 +64,22 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   const int size_m = input.size(0); 
   const int size_n = b_qweight.size(2) / 4;
   const int size_k = input.size(1);
-  const int workgroupmapping = 8;	//
+  const int workgroupmapping = WGM;	//
 
   /* grid sizes */
   size_t localWorkSize[3] = {BLOCKDIM, 1, 1};
   size_t globalWorkSize[3] = {1, 1, 1};
-  globalWorkSize[0] = DIVIDE(size_m, BLOCKM);
+  if constexpr (BALANCED_M_GRID) {
+    // Shrinks the M grid to the average tokens per expert, which only covers every
+    // row when the routing is uniform: with a skewed distribution the blocks for the
+    // larger experts are never launched and those output rows keep stale values
+    // (measured: counts [256,16,...] -> 128 silent wrong rows). Callers must only
+    // select the BALANCED_M_GRID modes (1002/1005/1006/1009/1022+) for balanced
+    // dispatch; see the PR notes for the pending runtime gate.
+    globalWorkSize[0] = DIVIDE(DIVIDE(size_m, experts_num), BLOCKM);
+  } else {
+    globalWorkSize[0] = DIVIDE(size_m, BLOCKM);
+  }
   globalWorkSize[1] = DIVIDE(size_n, BLOCKN);
   globalWorkSize[2] = experts_num;
 
@@ -122,8 +132,46 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   memset(w4a8_groupgemm_co_file, 0x0, sizeof(w4a8_groupgemm_co_file));
   
   if (output.scalar_type() == at::ScalarType::BFloat16) {
-    sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM8_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
-    sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+    if constexpr (FAST_TRUNC_NOEDGE) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMY_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMY.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (FAST_TRUNC_BF16) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMT_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMT.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (FAST_NOEDGE) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMX_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMX.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (FAST_BF16) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMF_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMF.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (UNIT_SCALE) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMU_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMU.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (PREFETCH_A) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMP_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMP.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (REDUCED_LDS) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGML_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGML.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (REDUCED_VGPR) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMV_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMV.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (EDGE_CMP_ONLY) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGME_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGME.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (NO_EDGE_STORE) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGMN_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGMN.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (REBUILT_WGM8) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM8R_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGM8R.co", BLOCKM, BLOCKN, BLOCKK);
+    } else if constexpr (WGM == 8) {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM%d_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK, WGM);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16.co", BLOCKM, BLOCKN, BLOCKK);
+    } else {
+      sprintf(funcName, "MOE_W4A8_I8_PERCHANNEL_MARLIN_ASM_TN_MT%dx%dx%d_WGM%d_GROUPGEMM", BLOCKM, BLOCKN, BLOCKK, WGM);
+      sprintf(w4a8_groupgemm_co_file, "moe_groupgemm_w4a8_channel/moe_groupgemm_w4a8_marlin_%dx%dx%d_TN_BF16_WGM%d.co", BLOCKM, BLOCKN, BLOCKK, WGM);
+    }
   } else {
     TORCH_CHECK(false, "moe_groupgemm_w4a8 only supports outputType in [BFloat16]");
   }
@@ -210,6 +258,19 @@ void _moe_groupgemm_marlin_w4a8_TN_impl(
   return;
 }
 
+// UNIT_SCALE / FAST_* / FAST_TRUNC_* .co variants skip the scale-apply
+// instructions entirely and assume a_scale/b_scale are all 1.0; passing
+// non-unit scales to one of these modes would silently compute wrong
+// results, so verify that assumption on the host before dispatching.
+static void check_unit_scale_for_fast_mode(
+    const torch::Tensor& a_scale, const torch::Tensor& b_scale, int mode) {
+  TORCH_CHECK(
+      torch::all(a_scale == 1).item<bool>() && torch::all(b_scale == 1).item<bool>(),
+      "moe_groupgemm_marlin_w4a8_asm: mode ", mode,
+      " requires a_scale and b_scale to be all-ones (unit scale) since the "
+      "selected kernel variant does not apply scaling");
+}
+
 torch::Tensor moe_groupgemm_marlin_w4a8_asm(
   torch::Tensor input,
   torch::Tensor b_qweight,
@@ -229,6 +290,199 @@ torch::Tensor moe_groupgemm_marlin_w4a8_asm(
       at::ScalarType::BFloat16,
       output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
         _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1001) {
+    // BLOCKM=64 measured numerically wrong against mode 1000 (E=8, 128 tok/expert,
+    // K=4096, N=2048: max_abs 5.6e4, every row differs) and no matching kernel for
+    // this tile is shipped, so reject it instead of returning silent garbage.
+    TORCH_CHECK(false, "moe_groupgemm_marlin_w4a8_asm: mode 1001 (BLOCKM=64) has no "
+                       "correct kernel variant; use mode 1000 or 1002");
+  } else if (mode == 1002) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1005) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 4>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1009) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1006) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 16>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1007) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 1>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1008) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 2>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1010) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1011) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1012) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1013) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1014) {
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1015) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1015);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1016) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1016);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1017) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1017);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1018) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1018);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1019) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1019);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 8, false, false, false, false, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1020) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1020);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 4, false, false, false, false, false, false, false, true>(
+          input, b_qweight, output, a_scale, b_scale,
+          problem_size, expert_offsets, experts_num);
+      }
+    );
+  } else if (mode == 1021) {
+    check_unit_scale_for_fast_mode(a_scale, b_scale, 1021);
+    AT_DISPATCH_FLOATING_TYPES_AND2(
+      at::ScalarType::Half,
+      at::ScalarType::BFloat16,
+      output.scalar_type(), "moe_groupgemm_w4a8_TN_impl",[&] {
+        _moe_groupgemm_marlin_w4a8_TN_impl<128, 512, 128, scalar_t, 768, true, 16, false, false, false, false, false, false, false, true>(
           input, b_qweight, output, a_scale, b_scale,
           problem_size, expert_offsets, experts_num);
       }
