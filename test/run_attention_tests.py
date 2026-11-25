@@ -9,6 +9,7 @@ from category_test_runner import run_category
 
 RUNNABLE_TEST_FILES = [
     "test/ci_tests/test_fp8_fp4_mqa_logits.py",
+    "test/ci_tests/test_topk_transform_sparse_mask_triton.py",
     "test/test_attention_existing_api.py",
     "test/test_native_categorized_attention_remaining_api.py",
     "test/test_sparse_attention_transform_api.py",
