@@ -3258,6 +3258,9 @@ void fast_kpool_topk_transform_interface(
   const auto stream = at::cuda::getCurrentCUDAStream().stream();
   const auto grid = dim3{static_cast<uint32_t>(out_rows)};
   const auto block = dim3{kKPoolThreads};
+  // The FP32 fallback calls topKPerRowJob(), whose extern __shared__
+  // smemOutput needs group_topk int32 slots. Keep this launch allocation
+  // even though select_sorted_kpool_topk() uses only static shared memory.
   if (pool_size == 4) {
     constexpr size_t dynamic_smem =
         (kKPoolTokenTopK / 4) * sizeof(int32_t);
