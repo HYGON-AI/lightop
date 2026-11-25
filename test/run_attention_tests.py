@@ -22,7 +22,7 @@ SCRIPT_TEST_FILES = [
     "test/test_fuse_rmsnorm_rope_contiguous.py",
     "test/test_scaled_masked_softmax.py",
     "test/test_scaled_masked_softmax_dropout.py",
-    "test/test_softmax.py",
+    "test/ci_tests/test_softmax.py",
     "test/test_fuse_gammarmsnorm_rope_qkv_kernel.py",
     "test/test_fuse_rmsnorm_rope_qkv_kernel.py",
     "test/test_mimo_v2_split_rope_vscale_kv_store.py",

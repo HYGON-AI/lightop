@@ -307,6 +307,309 @@ __global__ void fused_qk_rms_kernel_opt(
   }
 }
 
+// ============================================================================
+// Ported from custom_ops-20260819/csrc/custom_headrmsnorm_hip.hip
+// Fast path: bf16 token + fp32 q/k weight, one block per token (wavefront64).
+// ============================================================================
+__global__ void fuse_qkv_head_rms_kernel_128_opt(
+    at::BFloat16* __restrict__ data,
+    const float* __restrict__ q_weight,
+    const float* __restrict__ k_weight,
+    int num_tokens,
+    int total_dim_elements,
+    int q_head_num,
+    int kv_head_num,
+    int qk_head_dim,
+    float eps)
+{
+    int token_idx = blockIdx.x;
+    if (token_idx >= num_tokens) return;
+
+    int tid = threadIdx.x;
+    int warp_id = tid >> 6;
+    int lane_id = tid & 63;
+    int sub_group_id = lane_id >> 4;
+    int local_lane = lane_id & 15;
+    int dim_base = local_lane * 8;
+
+    size_t row_offset = (size_t)token_idx * total_dim_elements;
+
+    int total_norm_heads = q_head_num + kv_head_num;
+    int num_batches = (total_norm_heads + 15) >> 4;
+
+    for (int batch = 0; batch < num_batches; ++batch) {
+        int logical_head = batch * 16 + warp_id * 4 + sub_group_id;
+        if (logical_head >= total_norm_heads) continue;
+
+        const float* w_ptr = (logical_head < q_head_num) ? q_weight : k_weight;
+        size_t elem_offset = row_offset + (size_t)logical_head * qk_head_dim + dim_base;
+
+        float4 w_lo = *reinterpret_cast<const float4*>(w_ptr + dim_base);
+        float4 w_hi = *reinterpret_cast<const float4*>(w_ptr + dim_base + 4);
+
+        uint4 p = *reinterpret_cast<uint4*>(data + elem_offset);
+
+        float v0 = __builtin_bit_cast(float, (p.x & 0xFFFF) << 16);
+        float v1 = __builtin_bit_cast(float, (p.x >> 16) << 16);
+        float v2 = __builtin_bit_cast(float, (p.y & 0xFFFF) << 16);
+        float v3 = __builtin_bit_cast(float, (p.y >> 16) << 16);
+        float v4 = __builtin_bit_cast(float, (p.z & 0xFFFF) << 16);
+        float v5 = __builtin_bit_cast(float, (p.z >> 16) << 16);
+        float v6 = __builtin_bit_cast(float, (p.w & 0xFFFF) << 16);
+        float v7 = __builtin_bit_cast(float, (p.w >> 16) << 16);
+
+        float sum_sq = fma(v0, v0, fma(v1, v1, fma(v2, v2, fma(v3, v3,
+                     fma(v4, v4, fma(v5, v5, fma(v6, v6, v7 * v7)))))));
+        sum_sq += __shfl_down(sum_sq, 8, 16);
+        sum_sq += __shfl_down(sum_sq, 4, 16);
+        sum_sq += __shfl_down(sum_sq, 2, 16);
+        sum_sq += __shfl_down(sum_sq, 1, 16);
+
+        float inv_dim = 1.0f / (float)qk_head_dim;
+        float rms = 0.0f;
+        if ((lane_id & 15) == 0) rms = rsqrtf(sum_sq * inv_dim + eps);
+        rms = __shfl(rms, lane_id & ~15, 16);
+
+        float o0 = v0 * rms * w_lo.x;
+        float o1 = v1 * rms * w_lo.y;
+        float o2 = v2 * rms * w_lo.z;
+        float o3 = v3 * rms * w_lo.w;
+        float o4 = v4 * rms * w_hi.x;
+        float o5 = v5 * rms * w_hi.y;
+        float o6 = v6 * rms * w_hi.z;
+        float o7 = v7 * rms * w_hi.w;
+
+        uint4 out_p;
+        out_p.x = (__builtin_bit_cast(unsigned int, o1) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o0) >> 16);
+        out_p.y = (__builtin_bit_cast(unsigned int, o3) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o2) >> 16);
+        out_p.z = (__builtin_bit_cast(unsigned int, o5) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o4) >> 16);
+        out_p.w = (__builtin_bit_cast(unsigned int, o7) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o6) >> 16);
+
+        *reinterpret_cast<uint4*>(data + elem_offset) = out_p;
+    }
+}
+
+__global__ void fuse_qkv_head_rms_kernel_64_opt(
+    at::BFloat16* __restrict__ data,
+    const float* __restrict__ q_weight,
+    const float* __restrict__ k_weight,
+    int num_tokens,
+    int total_dim_elements,
+    int q_head_num,
+    int kv_head_num,
+    int qk_head_dim,
+    float eps)
+{
+    int token_idx = blockIdx.x;
+    if (token_idx >= num_tokens) return;
+
+    int tid = threadIdx.x;
+    int warp_id = tid >> 6;
+    int lane_id = tid & 63;
+    int sub_group_id = lane_id >> 3;
+    int local_lane = lane_id & 7;
+    int dim_base = local_lane * 8;
+
+    size_t row_offset = (size_t)token_idx * total_dim_elements;
+
+    int total_norm_heads = q_head_num + kv_head_num;
+    int num_batches = (total_norm_heads + 31) >> 5;
+
+    for (int batch = 0; batch < num_batches; ++batch) {
+        int logical_head = batch * 32 + warp_id * 8 + sub_group_id;
+        if (logical_head >= total_norm_heads) continue;
+
+        const float* w_ptr = (logical_head < q_head_num) ? q_weight : k_weight;
+        size_t elem_offset = row_offset + (size_t)logical_head * qk_head_dim + dim_base;
+
+        float4 w_lo = *reinterpret_cast<const float4*>(w_ptr + dim_base);
+        float4 w_hi = *reinterpret_cast<const float4*>(w_ptr + dim_base + 4);
+
+        uint4 p = *reinterpret_cast<uint4*>(data + elem_offset);
+
+        float v0 = __builtin_bit_cast(float, (p.x & 0xFFFF) << 16);
+        float v1 = __builtin_bit_cast(float, (p.x >> 16) << 16);
+        float v2 = __builtin_bit_cast(float, (p.y & 0xFFFF) << 16);
+        float v3 = __builtin_bit_cast(float, (p.y >> 16) << 16);
+        float v4 = __builtin_bit_cast(float, (p.z & 0xFFFF) << 16);
+        float v5 = __builtin_bit_cast(float, (p.z >> 16) << 16);
+        float v6 = __builtin_bit_cast(float, (p.w & 0xFFFF) << 16);
+        float v7 = __builtin_bit_cast(float, (p.w >> 16) << 16);
+
+        float sum_sq = fma(v0, v0, fma(v1, v1, fma(v2, v2, fma(v3, v3,
+                     fma(v4, v4, fma(v5, v5, fma(v6, v6, v7 * v7)))))));
+        sum_sq += __shfl_down(sum_sq, 4, 8);
+        sum_sq += __shfl_down(sum_sq, 2, 8);
+        sum_sq += __shfl_down(sum_sq, 1, 8);
+
+        float inv_dim = 1.0f / (float)qk_head_dim;
+        float rms = 0.0f;
+        if ((lane_id & 7) == 0) rms = rsqrtf(sum_sq * inv_dim + eps);
+        rms = __shfl(rms, lane_id & ~7, 8);
+
+        float o0 = v0 * rms * w_lo.x;
+        float o1 = v1 * rms * w_lo.y;
+        float o2 = v2 * rms * w_lo.z;
+        float o3 = v3 * rms * w_lo.w;
+        float o4 = v4 * rms * w_hi.x;
+        float o5 = v5 * rms * w_hi.y;
+        float o6 = v6 * rms * w_hi.z;
+        float o7 = v7 * rms * w_hi.w;
+
+        uint4 out_p;
+        out_p.x = (__builtin_bit_cast(unsigned int, o1) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o0) >> 16);
+        out_p.y = (__builtin_bit_cast(unsigned int, o3) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o2) >> 16);
+        out_p.z = (__builtin_bit_cast(unsigned int, o5) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o4) >> 16);
+        out_p.w = (__builtin_bit_cast(unsigned int, o7) >> 16) << 16 |
+                  (__builtin_bit_cast(unsigned int, o6) >> 16);
+
+        *reinterpret_cast<uint4*>(data + elem_offset) = out_p;
+    }
+}
+
+__global__ void fuse_qkv_head_rms_kernel_generic(
+    at::BFloat16* __restrict__ data,
+    const float* __restrict__ q_weight,
+    const float* __restrict__ k_weight,
+    int num_tokens,
+    int total_dim_elements,
+    int q_head_num,
+    int kv_head_num,
+    int qk_head_dim,
+    float eps)
+{
+    int token_idx = blockIdx.x;
+    if (token_idx >= num_tokens) return;
+
+    int tid = threadIdx.x;
+    int warp_id = tid >> 6;
+    int lane_id = tid & 63;
+
+    size_t row_offset = (size_t)token_idx * total_dim_elements;
+
+    int total_norm_heads = q_head_num + kv_head_num;
+    constexpr int heads_per_block = 4;
+    int heads_per_iter = heads_per_block;
+    int num_batches = (total_norm_heads + heads_per_iter - 1) / heads_per_iter;
+
+    for (int batch = 0; batch < num_batches; ++batch) {
+        int logical_head = batch * heads_per_iter + warp_id;
+        if (logical_head >= total_norm_heads) continue;
+
+        const float* w_ptr = (logical_head < q_head_num) ? q_weight : k_weight;
+        size_t head_base = row_offset + (size_t)logical_head * qk_head_dim;
+
+        float sum_sq = 0.0f;
+        for (int dim_offset = lane_id * 4;
+             dim_offset < qk_head_dim;
+             dim_offset += 64 * 4) {
+            uint2 p = *reinterpret_cast<const uint2*>(data + head_base + dim_offset);
+            float v0 = __builtin_bit_cast(float, (p.x & 0xFFFF) << 16);
+            float v1 = __builtin_bit_cast(float, (p.x >> 16) << 16);
+            float v2 = __builtin_bit_cast(float, (p.y & 0xFFFF) << 16);
+            float v3 = __builtin_bit_cast(float, (p.y >> 16) << 16);
+            sum_sq += fma(v0, v0, fma(v1, v1, fma(v2, v2, v3 * v3)));
+        }
+
+        sum_sq += __shfl_down(sum_sq, 32, 64);
+        sum_sq += __shfl_down(sum_sq, 16, 64);
+        sum_sq += __shfl_down(sum_sq, 8, 64);
+        sum_sq += __shfl_down(sum_sq, 4, 64);
+        sum_sq += __shfl_down(sum_sq, 2, 64);
+        sum_sq += __shfl_down(sum_sq, 1, 64);
+
+        float rms = 0.0f;
+        if (lane_id == 0) {
+            rms = rsqrtf(sum_sq / static_cast<float>(qk_head_dim) + eps);
+        }
+        rms = __shfl(rms, 0, 64);
+
+        for (int dim_offset = lane_id * 4;
+             dim_offset < qk_head_dim;
+             dim_offset += 64 * 4) {
+            size_t elem_offset = head_base + dim_offset;
+            uint2 p = *reinterpret_cast<const uint2*>(data + elem_offset);
+            float v0 = __builtin_bit_cast(float, (p.x & 0xFFFF) << 16);
+            float v1 = __builtin_bit_cast(float, (p.x >> 16) << 16);
+            float v2 = __builtin_bit_cast(float, (p.y & 0xFFFF) << 16);
+            float v3 = __builtin_bit_cast(float, (p.y >> 16) << 16);
+            float4 w_vec = *reinterpret_cast<const float4*>(w_ptr + dim_offset);
+
+            float o0 = v0 * rms * w_vec.x;
+            float o1 = v1 * rms * w_vec.y;
+            float o2 = v2 * rms * w_vec.z;
+            float o3 = v3 * rms * w_vec.w;
+            uint2 out_p;
+            out_p.x = (__builtin_bit_cast(unsigned int, o1) >> 16) << 16 |
+                      (__builtin_bit_cast(unsigned int, o0) >> 16);
+            out_p.y = (__builtin_bit_cast(unsigned int, o3) >> 16) << 16 |
+                      (__builtin_bit_cast(unsigned int, o2) >> 16);
+            *reinterpret_cast<uint2*>(data + elem_offset) = out_p;
+        }
+    }
+}
+
+static bool launch_fuse_qkv_head_rms_custom_bf16(
+    torch::Tensor& token_data,
+    torch::Tensor& q_weight,
+    torch::Tensor& k_weight,
+    int q_head_num,
+    int kv_head_num,
+    int qk_head_dim,
+    float eps,
+    cudaStream_t stream)
+{
+  if (token_data.scalar_type() != at::ScalarType::BFloat16 ||
+      q_weight.scalar_type() != at::ScalarType::Float ||
+      k_weight.scalar_type() != at::ScalarType::Float ||
+      qk_head_dim <= 0 || (qk_head_dim % 16) != 0) {
+    return false;
+  }
+
+  int num_tokens = token_data.size(0);
+  int total_dim = token_data.size(1);
+  if (num_tokens <= 0 || (q_head_num <= 0 && kv_head_num <= 0)) {
+    return true;
+  }
+
+  auto data_ptr_u = reinterpret_cast<std::uintptr_t>(token_data.data_ptr());
+  auto q_ptr_u = reinterpret_cast<std::uintptr_t>(q_weight.data_ptr());
+  auto k_ptr_u = reinterpret_cast<std::uintptr_t>(k_weight.data_ptr());
+  if ((data_ptr_u % 16) != 0 || (q_ptr_u % 16) != 0 || (k_ptr_u % 16) != 0) {
+    return false;
+  }
+
+  at::BFloat16* data_ptr = token_data.expect_contiguous()->data_ptr<at::BFloat16>();
+  const float* q_weight_ptr = q_weight.expect_contiguous()->data_ptr<float>();
+  const float* k_weight_ptr = k_weight.expect_contiguous()->data_ptr<float>();
+
+  dim3 grid(static_cast<unsigned int>(num_tokens));
+  dim3 block(256);
+
+  if (qk_head_dim == 128) {
+    fuse_qkv_head_rms_kernel_128_opt<<<grid, block, 0, stream>>>(
+        data_ptr, q_weight_ptr, k_weight_ptr,
+        num_tokens, total_dim, q_head_num, kv_head_num, qk_head_dim, eps);
+  } else if (qk_head_dim == 64) {
+    fuse_qkv_head_rms_kernel_64_opt<<<grid, block, 0, stream>>>(
+        data_ptr, q_weight_ptr, k_weight_ptr,
+        num_tokens, total_dim, q_head_num, kv_head_num, qk_head_dim, eps);
+  } else {
+    fuse_qkv_head_rms_kernel_generic<<<grid, block, 0, stream>>>(
+        data_ptr, q_weight_ptr, k_weight_ptr,
+        num_tokens, total_dim, q_head_num, kv_head_num, qk_head_dim, eps);
+  }
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return true;
+}
+
 
 void fuse_qkv_head_rms_norm(
     torch::Tensor& token_data,   // in-place [num_tokens, total_dim]
@@ -324,6 +627,14 @@ void fuse_qkv_head_rms_norm(
 
   const at::cuda::OptionalCUDAGuard device_guard(device_of(token_data));
   const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+  // Prefer custom_ops-20260819 token-parallel bf16 kernels when applicable.
+  if (launch_fuse_qkv_head_rms_custom_bf16(
+          token_data, q_weight, k_weight,
+          q_head_num, kv_head_num, qk_head_dim,
+          static_cast<float>(epsilon), stream)) {
+    return;
+  }
   
   auto data_ptr = reinterpret_cast<std::uintptr_t>(token_data.data_ptr());
   bool ptrs_are_aligned = (data_ptr % 16 == 0);

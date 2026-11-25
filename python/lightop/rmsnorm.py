@@ -44,6 +44,44 @@ def fused_add_rms_norm(
     )
     return x, residual
 
+
+def add_rms_norm_dynamic_quant(
+    hidden_states: torch.Tensor,
+    norm_weight: torch.Tensor,
+    smooth_scale: torch.Tensor,
+    residual: torch.Tensor,
+    quant_tokens: torch.Tensor,
+    per_token_scale: torch.Tensor,
+    after_res: torch.Tensor | None = None,
+    after_norm: torch.Tensor | None = None,
+    output_mode: int = 0,
+    eps: float = 1e-5,
+):
+    """Add + RMSNorm + smooth + per-token int8 dynamic quant (custom_ops-compatible).
+
+    output_mode: 0=quant only, 1=also after_res, 2=also after_norm.
+    """
+    if after_res is None:
+        after_res = torch.empty(0, device=hidden_states.device, dtype=hidden_states.dtype)
+    if after_norm is None:
+        after_norm = torch.empty(0, device=hidden_states.device, dtype=hidden_states.dtype)
+    return op.add_rms_norm_dynamic_quant(
+        hidden_states,
+        norm_weight,
+        smooth_scale,
+        residual,
+        quant_tokens,
+        per_token_scale,
+        after_res,
+        after_norm,
+        output_mode,
+        eps,
+    )
+
+
+# Alias matching custom_ops Python name.
+addrmsnormdynamicquant = add_rms_norm_dynamic_quant
+
 def gemma_fused_add_rmsnorm(
         x: torch.Tensor, residual: torch.Tensor, weight: torch.Tensor,
         variance_epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:

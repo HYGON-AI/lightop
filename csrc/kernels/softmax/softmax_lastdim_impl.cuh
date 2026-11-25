@@ -714,6 +714,11 @@ __global__ void softmax_block_backward(input_t *gradInput, const output_t *outpu
 
 
 namespace softmax_lastdim {
+
+template<typename input_t, typename output_t, typename acc_t, bool is_log_softmax>
+void softmax_lastdim_largesize_forward(output_t *dst, const input_t *src,
+                                       const int64_t &dim_size, const int64_t &outer_size,
+                                       const cudaStream_t &stream);
     
 template<typename input_t, typename output_t, typename acc_t, bool is_log_softmax>
 void softmax_lastdim_smallsize_forward(output_t *dst, const input_t *src, 
@@ -725,10 +730,19 @@ void softmax_lastdim_smallsize_forward(output_t *dst, const input_t *src,
     int log2_elements = softmax_warp_impl::log2_ceil(dim_size);
     const int next_power_of_two = 1 << log2_elements;
 
+    // On wave64 (HCU/ROCm), warp softmax with -inf padding (non-power-of-2
+    // dims) can yield sum==0 → NaN when next_pow2 <= warp size. Use block path.
+    int hw_warp = at::cuda::warp_size();
+    if (dim_size != next_power_of_two && next_power_of_two <= hw_warp) {
+        softmax_lastdim_largesize_forward<input_t, output_t, acc_t, is_log_softmax>(
+            dst, src, dim_size, outer_size, stream);
+        return;
+    }
+
     // use 256 threads per block to maximimize gpu utilization
     constexpr int threads_per_block = 256;
 
-    int warp_size = at::cuda::warp_size();
+    int warp_size = hw_warp;
     warp_size = (next_power_of_two < warp_size) ? next_power_of_two : warp_size;
 
     int batches_per_warp = (threads_per_block + next_power_of_two - 1) / next_power_of_two;

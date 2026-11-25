@@ -1,7 +1,14 @@
+"""Correctness and performance tests for Softmax.
+
+The test includes irregular-shape coverage that is not represented by standard
+benchmark shapes.
+"""
+
 #  -*-  coding: utf-8   -*-
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
 import torch
 import time
 import copy
@@ -202,8 +209,13 @@ class SoftmaxTester:
                 return torch_avg_time, fuse_avg_time
 
 
+def _softmax_last_dim(x_size):
+    return x_size[-1]
+
+
+@pytest.mark.skip(reason="manual benchmark suite: long accuracy+timing sweep")
 def test_lastdim_softmax():
-    # 设置输入的softmax的tensor size
+    # mid path + fused (>=16384) + unaligned / micro_perf-like shapes
     x_size_lists = [
         (4, 256, 1024),
         (4, 256, 2048),
@@ -212,28 +224,44 @@ def test_lastdim_softmax():
         (4, 256, 4096),
         (4, 256, 5015),
         (4, 256, 8192),
+        (4, 256, 16384),
+        (4, 256, 32768),
+        (4, 128, 65536),
+        (4, 64, 131072),
+        (1024, 8192),
+        (1024, 16384),
+        (1024, 32768),
         (4, 16, 1025, 1025),
+        (4, 256, 16385),  # fused threshold + 1 (unaligned)
+        # irregular: odd / non-pow2 / non-xpu-perf batches
+        (7, 3),
+        (7, 63),
+        (17, 100),
+        (33, 1000),
+        (65, 2047),
+        (513, 8191),
+        (3, 10000),
+        (7, 16383),
     ]
 
-    # 设置测试输入half类型时，输出是否为float
     half_to_float = False
-    # 设置是否测试half类型
-    test_half = False
 
-    for forward_only in [False, True]:  # 是否只测试推理
-        for softmax_type in ['softmax', 'log_softmax']:
-            # 设置测试类
-            softmax_tester = SoftmaxTester(softmax_type=softmax_type, dim=-1,
-                                           test_half=test_half, half_to_float=half_to_float)
-            for x_size in x_size_lists:
-                print('last dim test_half={}, forward_only={}, softmax_type={}, x_size={} '.
-                      format(test_half, forward_only, softmax_type, x_size))
-                softmax_tester.check_accuracy(x_size)
-                softmax_tester.test_speed(x_size, forward_only=forward_only, split_fwd_bwd=True)
+    for test_half in [False, True]:
+        for forward_only in [False, True]:
+            for softmax_type in ['softmax', 'log_softmax']:
+                softmax_tester = SoftmaxTester(softmax_type=softmax_type, dim=-1,
+                                               test_half=test_half, half_to_float=half_to_float)
+                for x_size in x_size_lists:
+                    print('last dim test_half={}, forward_only={}, softmax_type={}, x_size={} '.
+                          format(test_half, forward_only, softmax_type, x_size))
+                    softmax_tester.check_accuracy(x_size)
+                    # large fused dims: accuracy only (speed is covered by micro_perf)
+                    if _softmax_last_dim(x_size) <= 8192:
+                        softmax_tester.test_speed(x_size, forward_only=forward_only, split_fwd_bwd=True)
 
 
+@pytest.mark.skip(reason="manual benchmark suite: long accuracy+timing sweep")
 def test_spatial_softmax():
-    # 设置输入的softmax的tensor size
     x_size_lists = [
         (4, 256, 1024),
         (4, 256, 2048),
@@ -242,29 +270,205 @@ def test_spatial_softmax():
         (4, 256, 4096),
         (4, 256, 5015),
         (4, 256, 8192),
+        (4, 256, 16384),
+        (4, 256, 32768),
         (4, 16, 1025, 1025),
     ]
 
-    # 设置测试输入half类型时，输出是否为float
     half_to_float = False
-    # 设置是否测试half类型
     test_half = False
 
-    for forward_only in [False, True]:  # 是否只测试推理
+    for forward_only in [False, True]:
         for softmax_type in ['softmax', 'log_softmax']:
-            # 设置测试类
             softmax_tester = SoftmaxTester(softmax_type=softmax_type, dim=1,
                                            test_half=test_half, half_to_float=half_to_float)
             for x_size in x_size_lists:
                 print('spatial dim test_half={}, forward_only={}, softmax_type={}, x_size={} '.
                       format(test_half, forward_only, softmax_type, x_size))
                 softmax_tester.check_accuracy(x_size)
-                softmax_tester.test_speed(x_size, forward_only=forward_only, split_fwd_bwd=True)
+                if _softmax_last_dim(x_size) <= 8192:
+                    softmax_tester.test_speed(x_size, forward_only=forward_only, split_fwd_bwd=True)
+
+
+
+def run_softmax_benchmark_suite():
+    test_lastdim_softmax()
+    # test_spatial_softmax()
+
+
+# Irregular-shape Softmax correctness coverage.
+"""Accuracy tests for Softmax shapes not covered by xpu-perf micro_perf.
+
+xpu-perf vector_norm workloads use batch=1024 and power-of-2 dims only.
+This suite stresses:
+  - odd last dims
+  - non-power-of-2 dims (incl. not divisible by vec width 4/8)
+  - varied batch / token counts (incl. odd batches)
+"""
+
+from lightop import op
+
+DEVICE = "cuda"
+
+# Odd dims: mid path + around fused threshold (>=16384)
+ODD_DIMS = (
+    1,
+    3,
+    7,
+    15,
+    31,
+    63,
+    127,
+    255,
+    511,
+    1023,
+    2047,
+    4095,
+    8191,
+    16383,
+    16385,
+    32767,
+)
+
+# Non-power-of-2 / not vec-aligned (4 or 8)
+NON_POW2_DIMS = (
+    6,
+    12,
+    48,
+    100,
+    384,
+    768,
+    1000,
+    1536,
+    3000,
+    5000,
+    6000,
+    8208,
+    10000,
+    12000,
+    20000,
+    25000,
+    48000,
+)
+
+# Batches / rows not used by xpu-perf (which fixes batch=1024)
+BATCHES = (1, 3, 7, 17, 33, 65, 128, 256, 513, 1000, 1025)
+
+DTYPES = (
+    (torch.float32, 1e-4, 1e-4),
+    (torch.float16, 2e-2, 2e-2),
+    (torch.bfloat16, 2e-2, 2e-2),
+)
+
+# Representative (batch, dim) pairs mixing irregular batch and dim
+MIXED_CASES = (
+    (1, 16385),
+    (3, 16384),
+    (7, 8191),
+    (17, 10000),
+    (33, 5000),
+    (65, 4095),
+    (128, 3000),
+    (256, 1536),
+    (513, 1023),
+    (1000, 768),
+    (1025, 511),
+    (7, 32767),
+    (3, 48000),
+    (17, 20000),
+    (1025, 16383),
+    (7, 8208),
+    (33, 63),
+    (65, 100),
+    (257, 2047),
+    (999, 999),
+)
+
+
+def _max_abs(a: torch.Tensor, b: torch.Tensor) -> float:
+    return (a.float() - b.float()).abs().max().item()
+
+
+def _check_softmax(batch: int, dim: int, dtype: torch.dtype, rtol: float, atol: float):
+    torch.manual_seed(0)
+    x = torch.randn(batch, dim, device=DEVICE, dtype=dtype)
+    y_ref = torch.softmax(x.float(), dim=-1).to(dtype)
+    y = op.softmax_forward_autograd(x, -1, False, False)
+    close = torch.allclose(y, y_ref, rtol=rtol, atol=atol)
+    row_sum = y.float().sum(dim=-1)
+    sum_ok = torch.allclose(
+        row_sum, torch.ones_like(row_sum), rtol=1e-3, atol=1e-3
+    )
+    return close and sum_ok, _max_abs(y, y_ref)
+
+
+def _iter_irregular_cases():
+    # Fixed batch=7 over odd / non-pow2 dims (batch itself irregular)
+    for dim in ODD_DIMS + NON_POW2_DIMS:
+        yield 7, dim, "odd/non_pow2"
+    # Fixed dim=1000 (non-pow2) over irregular batches
+    for batch in BATCHES:
+        yield batch, 1000, "batch_sweep"
+    # Fixed dim=16385 (odd fused+) over irregular batches
+    for batch in (1, 3, 7, 17, 33, 65, 128, 256, 513):
+        yield batch, 16385, "odd_fused_batch"
+    # Hand-picked mixed cases
+    for batch, dim in MIXED_CASES:
+        yield batch, dim, "mixed"
+
+
+def run_irregular_softmax_suite():
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA/ROCm device required")
+
+    failures = []
+    for batch, dim, tag in _iter_irregular_cases():
+        for dtype, rtol, atol in DTYPES:
+            ok, max_abs = _check_softmax(batch, dim, dtype, rtol, atol)
+            print(
+                f"[{'PASS' if ok else 'FAIL'}] softmax {tag} "
+                f"dtype={dtype} batch={batch} dim={dim} max_abs={max_abs:.4e}"
+            )
+            if not ok:
+                failures.append(("softmax", tag, dtype, batch, dim, max_abs))
+
+    if failures:
+        raise AssertionError(f"irregular Softmax failures: {failures}")
+    print("All irregular Softmax checks passed.")
+
+
+# --- pytest entry points ---------------------------------------------------
+# CI runs this file from test/ci_tests via pytest. The two suites above are
+# manual benchmark sweeps (marked skip); the parametrized cases below are the
+# CI correctness surface and stay small / timing-free.
+CI_CASES = (
+    (7, 3),
+    (7, 63),
+    (7, 2047),
+    (7, 16385),
+    (33, 1000),
+    (513, 1023),
+    (999, 999),
+    (3, 48000),
+)
+
+
+@pytest.mark.parametrize("batch,dim", CI_CASES)
+@pytest.mark.parametrize("dtype,rtol,atol", DTYPES)
+def test_softmax_irregular(
+    batch: int, dim: int, dtype: torch.dtype, rtol: float, atol: float
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("requires HCU")
+    ok, max_abs = _check_softmax(batch, dim, dtype, rtol, atol)
+    assert ok, (
+        f"softmax batch={batch} dim={dim} dtype={dtype} max_abs={max_abs:.4e}"
+    )
 
 
 def main():
-    test_lastdim_softmax()
-    # test_spatial_softmax()
+    run_softmax_benchmark_suite()
+    run_irregular_softmax_suite()
 
 
 if __name__ == "__main__":

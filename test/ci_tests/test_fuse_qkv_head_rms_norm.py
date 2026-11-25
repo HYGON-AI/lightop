@@ -69,8 +69,11 @@ def run_case(num_tokens, q_head_num=8, kv_head_num=8, qk_head_dim=128, v_head_di
 
     # 随机初始化数据
     token_data = torch.randn((num_tokens, total_dim), dtype=dtype, device=device)
+    # Use different Q/K weights to verify the independent-weight interface.
     q_weight = torch.ones(qk_head_dim, dtype=torch.float32, device=device)
-    k_weight = torch.ones(qk_head_dim, dtype=torch.float32, device=device)
+    k_weight = torch.linspace(
+        0.5, 1.5, qk_head_dim, dtype=torch.float32, device=device
+    )
 
     # 1. 精度验证 (Correctness)
     base_out = baseline_qk_rms_norm(token_data, q_weight, k_weight, q_head_num, kv_head_num, qk_head_dim, eps)
