@@ -83,6 +83,8 @@ from .fuse_topk_transform import (
     fast_kpool_topk_transform_fused,
     fast_topk_transform_fused,
     fast_topk_transform_sparse_mask_fused,
+    fast_topk_transform_sparse_mask_fused_v2,
+    sparse_mask_topk_triton_enabled,
     fast_topk_transform_ragged_fused,
     topk_transform_512,
     topk_transform_1024,

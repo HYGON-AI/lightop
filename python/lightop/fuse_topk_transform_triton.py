@@ -15,7 +15,7 @@ ninety block-wide barriers. On gfx938 it costs 1.648 ms per call and 43.9 % of
 a decode step.
 
 This module restores parallelism in the row dimension (grid = rows x blocks)
-and reproduces the reference selection rule, including its two paths:
+and reproduces the reference selection rule, including all three of its paths:
 
 * **Fast path** (what production hits). The condition is
   ``positive_count + masked_out_count >= topk``: emit every valid position
@@ -160,9 +160,24 @@ def sparse_mask_topk_triton(
 ) -> torch.Tensor:
     """Sparse-mask TopK plus page-table transform (Triton path).
 
-    Same contract as :func:`fast_topk_transform_sparse_mask_fused`; the result
-    is a ``(rows, topk)`` int32 tensor of page ids. Ordering is unspecified by
-    the reference contract; the selected set matches.
+    Reproduces all three selection paths of
+    ``topk_transform_decode_kernel_sparse_mask``:
+
+    1. ``lengths[row] <= topk``: the reference takes the short-context shortcut
+       ``radix_select_8bit_naive_topk_transform``, which does **no** selection
+       at all -- it copies ``page_table[0:length]`` and pads the rest with
+       ``-1``, ignoring both the mask and the scores. Those rows are handled
+       identically here.
+    2. Fast path (``positive_count <= topk`` and
+       ``positive_count + masked_out_count >= topk``): every strictly positive
+       valid position, then the lowest-index masked-out positions in ascending
+       order.
+    3. Generic path: rank every valid position by score. Ties resolve to the
+       lowest logical index (stable order), matching the reference's
+       ``argsort(-score, stable=True)`` requirement.
+
+    The result is ``(rows, topk)`` int32 page ids. Ordering across a row is
+    unspecified by the reference contract; the selected set matches.
     """
     if score.dim() != 2 or score.dtype != torch.float32:
         raise ValueError("score must be float32 [rows, width]")
@@ -178,6 +193,25 @@ def sparse_mask_topk_triton(
     pos_score, valid_score, invalid = _probe(score, nonzero_mask, lengths)
     table = _expand_page_table(page_table_size_1, cu_seqlens_q, rows)
 
+    # Path 1: short context. The reference copies the page table row and pads
+    # with -1 without consulting the mask or the scores.
+    short = lengths <= topk
+    long_rows = (~short).nonzero(as_tuple=True)[0]
+
+    out = torch.full((rows, topk), -1, dtype=torch.int32, device=score.device)
+    if short.any():
+        short_rows = short.nonzero(as_tuple=True)[0]
+        positions = torch.arange(topk, device=score.device).unsqueeze(0)
+        in_length = positions < lengths[short_rows].unsqueeze(1)
+        copied = torch.gather(
+            table[short_rows], 1, positions.expand(short_rows.numel(), topk).long()
+        ).to(torch.int32)
+        out[short_rows] = torch.where(
+            in_length, copied, torch.full_like(copied, -1)
+        )
+    if long_rows.numel() == 0:
+        return out
+
     positive_count = (pos_score > 0.0).sum(dim=1)
     invalid_count = invalid.sum(dim=1).to(positive_count.dtype)
 
@@ -186,16 +220,19 @@ def sparse_mask_topk_triton(
     # position by score (its generic path). Both paths are evaluated lazily so
     # the common case pays for a single top-k.
     fast = (positive_count <= topk) & ((positive_count + invalid_count) >= topk)
+    fast &= ~short
 
     # --- fast rows: positives by score, then lowest-index masked-out positions
-    out = torch.gather(
-        table, 1, torch.topk(pos_score, topk, dim=-1, sorted=True).indices.long()
-    ).to(torch.int32)
-    if bool((~fast).any()):
-        slow_rows = (~fast).nonzero(as_tuple=True)[0]
-        slow_idx = torch.topk(
-            valid_score[slow_rows], topk, dim=-1, sorted=True
-        ).indices.long()
+    fast_idx = torch.topk(pos_score[long_rows], topk, dim=-1, sorted=True).indices.long()
+    out[long_rows] = torch.gather(table[long_rows], 1, fast_idx).to(torch.int32)
+
+    slow_rows = (long_rows[~fast[long_rows]])
+    if slow_rows.numel():
+        # Stable descending sort fixes the tie rule to "lowest index wins",
+        # which torch.topk does not guarantee.
+        slow_idx = torch.sort(
+            valid_score[slow_rows], dim=-1, descending=True, stable=True
+        ).indices[:, :topk].long()
         out[slow_rows] = torch.gather(table[slow_rows], 1, slow_idx).to(torch.int32)
 
     if bool((fast & ((topk - positive_count) > 0)).any()):

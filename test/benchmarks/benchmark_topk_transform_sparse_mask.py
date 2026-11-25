@@ -82,6 +82,18 @@ def main() -> int:
     print("| ---: | ---: | ---: | ---: | ---: |")
     for rows, width in shapes:
         score, mask, lengths, page_table, cu = make_inputs(rows, width, args.density)
+
+        # Sanity: never report a timing for a divergent implementation.
+        expected = fast_topk_transform_sparse_mask_fused(
+            score, mask, lengths, page_table, cu, TOPK)
+        got = fast_topk_transform_sparse_mask_fused_v2(
+            score, mask, lengths, page_table, cu, TOPK)
+        if not torch.equal(expected.sort(dim=-1).values, got.sort(dim=-1).values):
+            raise SystemExit(
+                f"selected set mismatch at rows={rows} width={width} "
+                f"density={args.density}; refusing to time"
+            )
+
         hip = bench(lambda: fast_topk_transform_sparse_mask_fused(
             score, mask, lengths, page_table, cu, TOPK))
         tri = bench(lambda: fast_topk_transform_sparse_mask_fused_v2(

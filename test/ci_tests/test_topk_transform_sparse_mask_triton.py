@@ -3,19 +3,22 @@
 
 """Correctness of the Triton sparse-mask TopK against a torch reference.
 
-The reference below re-implements the selection rule of
-``topk_transform_decode_kernel_sparse_mask`` / ``sparse_mask_exact_topk``
-directly from its documented behaviour:
+The reference re-implements all three selection paths of
+``topk_transform_decode_kernel_sparse_mask`` / ``sparse_mask_exact_topk`` from
+their documented behaviour:
 
-* a masked-out position behaves like a ``+0.0`` score;
-* the fast path (``positive_count <= topk`` and
-  ``positive_count + masked_out_count >= topk``) emits every strictly positive
-  valid position and fills the rest with the lowest-index masked-out
-  positions in ascending logical order;
-* otherwise the generic path ranks every valid position by score.
+1. ``lengths[row] <= topk``: the kernel takes
+   ``radix_select_8bit_naive_topk_transform``, which performs no selection at
+   all -- it copies ``page_table[0:length]`` and pads the remainder with ``-1``,
+   ignoring the mask and the scores.
+2. Fast path (``positive_count <= topk`` and
+   ``positive_count + masked_out_count >= topk``): every strictly positive
+   valid position, then the lowest-index masked-out positions in ascending
+   logical order (masked-out positions are the implicit ``+0.0`` entries).
+3. Generic path: rank every valid position by score, ties to the lowest index.
 
-The Triton path must produce the same selected *set*; the reference contract
-leaves the output order unspecified.
+The Triton path must produce the same selected *set* (the reference contract
+leaves the ordering within a row unspecified).
 """
 
 import os
@@ -60,15 +63,22 @@ def reference_sparse_mask_topk(
 
     out = torch.empty((rows, topk), dtype=torch.int32, device=score.device)
     for row in range(rows):
+        length = int(lengths[row])
+        if length <= topk:
+            # Short-context shortcut: copy then pad with -1, no selection.
+            tail = torch.full((topk - length,), -1, dtype=torch.int32, device=score.device)
+            out[row] = torch.cat([page_table[row, :length].to(torch.int32), tail])
+            continue
+
         n_pos = int(positive[row].sum())
         n_zero = int(invalid[row].sum())
         if n_pos <= topk and n_pos + n_zero >= topk:
             picked = torch.argsort(-pos_score[row], stable=True)[:topk]
-            chosen = picked.tolist()
+            chosen = picked.tolist()[:n_pos]
             need = topk - n_pos
             if need > 0:
                 fill = torch.nonzero(invalid[row], as_tuple=False).flatten()[:need]
-                chosen = chosen[:n_pos] + fill.tolist()
+                chosen = chosen + fill.tolist()
         else:
             chosen = torch.argsort(-valid_score[row], stable=True)[:topk].tolist()
         chosen = (chosen + [0] * topk)[:topk]
@@ -76,7 +86,8 @@ def reference_sparse_mask_topk(
     return out
 
 
-def _make_inputs(rows: int, width: int, density: float, lengths_mode: str = "full"):
+def _make_inputs(rows: int, width: int, density: float, lengths_mode: str = "full",
+                 requests: int = 0):
     device = "cuda"
     torch.manual_seed(rows * 131 + width + int(density * 100))
     score = torch.randn(rows, width, device=device, dtype=torch.float32) * 4.0
@@ -89,14 +100,33 @@ def _make_inputs(rows: int, width: int, density: float, lengths_mode: str = "ful
         nonzero_mask |= (bits[:, bit::16][:, :mask_words] << bit).to(torch.int16)
     if lengths_mode == "full":
         lengths = torch.full((rows,), width, device=device, dtype=torch.int32)
+    elif lengths_mode == "short":
+        # length <= topk takes the reference's copy-and-pad shortcut
+        lengths = torch.randint(
+            1, TOPK + 1, (rows,), device=device, dtype=torch.int32
+        )
     else:
         lengths = torch.randint(
             width // 2, width + 1, (rows,), device=device, dtype=torch.int32
         )
-    page_table = (
-        torch.arange(width, device=device, dtype=torch.int32).repeat(rows, 1).contiguous()
-    )
-    cu_seqlens_q = torch.arange(0, rows + 1, device=device, dtype=torch.int32)
+    if requests:
+        assert rows % requests == 0
+        per_req = rows // requests
+        page_table = (
+            torch.arange(width, device=device, dtype=torch.int32)
+            .repeat(requests, 1)
+            .contiguous()
+        )
+        cu_seqlens_q = torch.arange(
+            0, rows + 1, per_req, device=device, dtype=torch.int32
+        )
+    else:
+        page_table = (
+            torch.arange(width, device=device, dtype=torch.int32)
+            .repeat(rows, 1)
+            .contiguous()
+        )
+        cu_seqlens_q = torch.arange(0, rows + 1, device=device, dtype=torch.int32)
     return score, nonzero_mask, lengths, page_table, cu_seqlens_q
 
 
@@ -111,6 +141,9 @@ CASES = [
     (2, 8192, 0.10, "full"),
     (4, 16384, 0.25, "trunc"),
     (3, 32768, 0.75, "full"),
+    # short context: the reference copies the page table and pads with -1
+    (2, 4096, 1.00, "short"),
+    (3, 8192, 0.25, "short"),
 ]
 
 
@@ -134,11 +167,42 @@ def test_matches_reference(rows, width, density, lengths_mode):
 def test_matches_hip_kernel(rows, width, density, _mode):
     """The HIP kernel is the production reference; compare as a set."""
     score, nonzero_mask, lengths, page_table, cu_seqlens_q = _make_inputs(
-        rows, width, density, "full"
+        rows, width, density, _mode
     )
     expected = fast_topk_transform_sparse_mask_fused(
         score, nonzero_mask, lengths, page_table, cu_seqlens_q, TOPK
     )
+    got = fast_topk_transform_sparse_mask_fused_v2(
+        score, nonzero_mask, lengths, page_table, cu_seqlens_q, TOPK
+    )
+    assert torch.equal(_as_set(got), _as_set(expected))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a DCU device")
+def test_short_context_pads_with_minus_one():
+    """lengths <= topk must copy then pad with -1, ignoring mask and scores."""
+    score, nonzero_mask, lengths, page_table, cu_seqlens_q = _make_inputs(
+        2, 4096, 1.00, "short"
+    )
+    got = fast_topk_transform_sparse_mask_fused_v2(
+        score, nonzero_mask, lengths, page_table, cu_seqlens_q, TOPK
+    )
+    for row in range(score.shape[0]):
+        length = int(lengths[row])
+        assert torch.equal(got[row, :length], page_table[row, :length])
+        assert bool((got[row, length:] == -1).all())
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires a DCU device")
+def test_page_table_per_request():
+    """A per-request page table is expanded through cu_seqlens_q."""
+    rows, requests = 4, 2
+    score, nonzero_mask, lengths, page_table, cu_seqlens_q = _make_inputs(
+        rows, 8192, 0.25, "full", requests=requests
+    )
+    assert page_table.shape[0] == requests
+    expanded = page_table[cu_seqlens_q[1:] - 1]
+    expected = reference_sparse_mask_topk(score, nonzero_mask, lengths, expanded, TOPK)
     got = fast_topk_transform_sparse_mask_fused_v2(
         score, nonzero_mask, lengths, page_table, cu_seqlens_q, TOPK
     )
