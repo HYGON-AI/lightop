@@ -656,6 +656,7 @@ void silu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_and_mul_opt(torch::Tensor& out,torch::Tensor& input);
 void gelu_tanh_and_mul_opt(torch::Tensor& out,torch::Tensor& input); 
 void relu2_opt(torch::Tensor& out,torch::Tensor& input); 
+std::vector<Tensor> topk_power2_opt(Tensor& value, Tensor& indice, Tensor& src, int64_t k);
 torch::Tensor reshape_to_float(torch::Tensor input, int64_t vocab_size);
 torch::Tensor add_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
 torch::Tensor sub_int8(const torch::Tensor& a, const torch::Tensor& b, bool saturate=true);
@@ -1835,6 +1836,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("gelu_and_mul_opt", &at::native::gelu_and_mul_opt, "gelu_and_mul_opt");
   m.def("gelu_tanh_and_mul_opt", &at::native::gelu_tanh_and_mul_opt, "gelu_tanh_and_mul_opt");
   m.def("relu2_opt", &at::native::relu2_opt, "relu2_opt");
+  m.def("topk_power2_opt", &at::native::topk_power2_opt, "topk_power2_opt");
   m.def("reshape_to_float", &at::native::reshape_to_float, "reshape_to_float");
   m.def("add_int8", &at::native::add_int8, "add_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
   m.def("sub_int8", &at::native::sub_int8, "sub_int8", py::arg("a"), py::arg("b"), py::arg("saturate") = true);
