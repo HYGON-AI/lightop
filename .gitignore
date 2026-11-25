@@ -54,6 +54,10 @@ csrc/lmslimquant_native/**/*_hip.cuh
 /csrc/**/*_hip.hpp
 /csrc/**/*_hip.cuh
 
+# csrc/kernels/gdn/gdn_recurrent.hip is hand-written, not a hipify output. Re-include
+# it explicitly (the last matching pattern wins) so the kernel stays trackable.
+!csrc/kernels/gdn/gdn_recurrent.hip
+
 # hipify-generated prefix-form outputs (csrc/hip_*.cpp at any depth after the
 # csrc layout reorg; the old flat rule only matched the csrc/ root).
 csrc/**/hip_*.cpp

@@ -9,6 +9,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import sysconfig
+import tempfile
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension, ROCM_HOME
 from setuptools import find_packages, setup
 from setuptools.command.build_ext import build_ext
@@ -278,9 +280,69 @@ def _write_ninja_file_and_compile_objects(sources: List[str], objects, cflags, p
 
 min_supported_cpython = "0x03090000"  # Python 3.9 hexcode
 
+_GDN_FLAGS = [
+    '-O3', '-fPIC', '--offload-arch=gfx938',
+    '-mllvm=-enable-latency-hack=true',
+    '-mllvm=-mmac-latency=5',
+    '-mllvm=-ds-load-store-latency=6',
+    '-mllvm=-disable-machine-sink=True',
+    '-mllvm=-check-valu-data-forward-hazards=0',
+    '-mllvm=-disable-cluster-lds-memops=true',
+    '-mllvm=-amdgpu-disable-backoff-barrier=false',
+    '-mllvm=-support-768-vgprs=true',
+    '-mllvm=-hcu-update-wait-by-reverse-search=true',
+    '-mllvm=-hcu-pre-emit-load-store-opt=false',
+]
+
+
+def _build_gdn(build_lib: str, inplace: bool) -> None:
+    """Build the independent aicc GDN extension; never touch lightop.op."""
+    root = os.path.dirname(os.path.abspath(__file__))
+    src = os.path.join(root, 'csrc', 'kernels', 'gdn')
+    hip = os.path.join(src, 'gdn_recurrent.hip')
+    binding = os.path.join(src, 'gdn_binding.cpp')
+    if not os.path.exists(hip) or not os.path.exists(binding):
+        return
+    archs = os.environ.get('PYTORCH_ROCM_ARCH', 'gfx938').split(';')
+    if 'gfx938' not in archs:
+        print('[gdn] gfx938 not in PYTORCH_ROCM_ARCH; skipping the GDN extension')
+        return
+    aicc = os.environ.get('AICC') or os.path.join(ROCM_HOME or '/opt/dtk', 'bin', 'aicc')
+    if not os.path.exists(aicc):
+        raise RuntimeError(f'[gdn] aicc not found at {aicc}; GDN needs the aicc toolchain')
+    suffix = sysconfig.get_config_var('EXT_SUFFIX')
+    out_dir = os.path.join(root, 'python', 'lightop') if inplace else os.path.join(build_lib, 'lightop')
+    os.makedirs(out_dir, exist_ok=True)
+    out = os.path.join(out_dir, '_gdn' + suffix)
+    from torch.utils.cpp_extension import include_paths, library_paths
+    with tempfile.TemporaryDirectory() as tmp:
+        kernel_obj = os.path.join(tmp, 'gdn_recurrent.o')
+        binding_obj = os.path.join(tmp, 'gdn_binding.o')
+        subprocess.check_call([aicc, *_GDN_FLAGS, f'-I{root}/csrc', '-c', hip, '-o', kernel_obj])
+        cxx_flags = [
+            '-O3', '-fPIC', '-std=c++17', '-w',
+            f'-I{root}/csrc', f'-I{ROCM_HOME}/include', f'-I{sysconfig.get_paths()["include"]}',
+            '-D__HIP_PLATFORM_AMD__=1', '-DTORCH_EXTENSION_NAME=_gdn',
+            f'-D_GLIBCXX_USE_CXX11_ABI={int(torch._C._GLIBCXX_USE_CXX11_ABI)}',
+        ]
+        cxx_flags.extend(f'-I{p}' for p in include_paths())
+        subprocess.check_call([os.environ.get('CXX', 'g++'), *cxx_flags, '-c', binding, '-o', binding_obj])
+        link_flags = [
+            '-shared', binding_obj, kernel_obj,
+            f'-L{ROCM_HOME}/lib', '-lamdhip64',
+            f'-L{library_paths()[0]}', '-ltorch_python', '-ltorch', '-lc10',
+        ]
+        subprocess.check_call([os.environ.get('CXX', 'g++'), *link_flags, '-o', out])
+    print(f'[gdn] built {out}')
+
+
 class BuildReleaseExtension(BuildExtension):
     def __init__(self, *args, **kwargs) -> None:
         super(BuildReleaseExtension, self).__init__(*args, **kwargs)
+
+    def run(self):
+        super().run()
+        _build_gdn(self.build_lib, self.inplace)
 
     def build_extensions(self) -> None:
         self._check_abi()
