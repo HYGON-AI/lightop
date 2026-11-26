@@ -187,6 +187,8 @@ __global__ void swiglu_compact_rows(
         *reinterpret_cast<OutputVec*>(output + offset + col) = q;
       }
     }
+    // Both waves must finish reading wave_max before either wave reuses it
+    // for the next grid-stride task. Keep this barrier inside the loop.
     if constexpr (kWavesPerRow == 2)
       __syncthreads();
   }

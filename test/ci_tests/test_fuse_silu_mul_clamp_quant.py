@@ -198,6 +198,11 @@ def test_gfx936_ep_compact_rows_match_fallback(
     )
     if compact_waves and expect_m == (25 if experts in (12, 24, 48) else 33):
         counts[experts // 2] = capacity
+    if compact_waves == 2 and expect_m == 1:
+        # An underestimated hint must still process multiple tasks per block.
+        # This exercises wave_max reuse across iterations of the 480-CTA grid.
+        counts[experts // 2] = capacity
+        assert sum(counts) > 480
     for expert, count in enumerate(counts):
         if count:
             x[expert, :count].normal_().mul_(4)
@@ -244,6 +249,35 @@ def test_gfx936_ep_compact_rows_match_fallback(
         assert kernel["args"]["grid"] == [experts, fallback_grid_y, 1]
     assert torch.equal(q, expected_q)
     assert torch.equal(scales, expected_scales)
+
+    if compact_waves == 2 and expect_m == 1:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            fuse_silu_mul_clamp_quant_ep(
+                x, 10.0, mask, expect_m, q, scales, round_silu=True
+            )
+        # Replay with changed values and an empty intermediate workload.
+        # The graph must reread masked_m, preserve inactive output, and remain
+        # bitwise equal to the existing per-expert kernel on every replay.
+        for empty in (False, True, False):
+            for expert, count in enumerate(counts):
+                if count:
+                    x[expert, :count].normal_().mul_(4)
+            mask.copy_(torch.tensor(
+                [0] * experts if empty else counts,
+                device=x.device, dtype=torch.int32,
+            ))
+            q.fill_(99)
+            scales.fill_(-1)
+            expected_q.fill_(99)
+            expected_scales.fill_(-1)
+            graph.replay()
+            fuse_silu_mul_clamp_quant_ep(
+                x, 10.0, mask, 0, expected_q, expected_scales,
+                round_silu=True,
+            )
+            assert torch.equal(q, expected_q)
+            assert torch.equal(scales, expected_scales)
 
 
 def test_product_rounding_graph_replay_matches_torch():
