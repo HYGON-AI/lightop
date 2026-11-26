@@ -151,9 +151,30 @@ __device__ __forceinline__ void issue_q_head(scalar_t q_stage[][BM * WK],
   }
 }
 
+// Loop-invariant part of pack_c_contig4: the three ds_bpermute source-lane
+// byte-addresses and the lane's quadrant depend only on lane_id, so they are
+// computed once instead of in every epilogue accumulator. As in
+// WShflXor16Plan, this is what `__shfl_xor` costs per call (mbcnt + and/xor/
+// cmp/cndmask/shift) that the explicit-bpermute path avoids.
+struct PackC4Plan {
+  int addr16;  // ds_bpermute byte addr of the xor-16 peer
+  int addr32;
+  int addr48;
+  int quad;    // (lane_id >> 4) & 3
+};
+
+__device__ __forceinline__ PackC4Plan precompute_pack_c_contig4(int lane_id) {
+  return {(lane_id ^ 16) << 2, (lane_id ^ 32) << 2, (lane_id ^ 48) << 2,
+          (lane_id >> 4) & 3};
+}
+
+__device__ __forceinline__ float bpermute_f32(int addr, float v) {
+  return __int_as_float(__builtin_amdgcn_ds_bpermute(addr, __float_as_int(v)));
+}
+
 // MFMA C layout -> 4 contiguous cols (same as mika pack_c_contig4).
-__device__ __forceinline__ floatx4 pack_c_contig4(floatx4 c, int lane_id) {
-  const int a = (lane_id >> 4) & 3;
+__device__ __forceinline__ floatx4 pack_c_contig4(floatx4 c, const PackC4Plan& plan) {
+  const int a = plan.quad;
   const float c0 = c[0];
   const float c1 = c[1];
   const float c2 = c[2];
@@ -163,9 +184,9 @@ __device__ __forceinline__ floatx4 pack_c_contig4(floatx4 c, int lane_id) {
   const float send32 = (a == 0) ? c2 : (a == 1) ? c3 : (a == 2) ? c0 : c1;
   const float send48 = (a == 0) ? c3 : (a == 1) ? c2 : (a == 2) ? c1 : c0;
 
-  const float recv16 = __shfl_xor(send16, 16);
-  const float recv32 = __shfl_xor(send32, 32);
-  const float recv48 = __shfl_xor(send48, 48);
+  const float recv16 = bpermute_f32(plan.addr16, send16);
+  const float recv32 = bpermute_f32(plan.addr32, send32);
+  const float recv48 = bpermute_f32(plan.addr48, send48);
 
   float tmp0, tmp1, tmp2, tmp3;
   if (a == 0) {
