@@ -198,12 +198,12 @@ void w8a8_fp16_gemm(const torch::Tensor& mat_a, const torch::Tensor& mat_b,
             handle, matmul_desc,
             mat_a_layout, mat_b_layout, mat_c_layout, output_layout,
             pref, 1, heuristicResult, &returnedAlgoCount);
-    if (ret != HIPBLAS_STATUS_SUCCESS || returnedAlgoCount == 0) {
-        std::cerr << "[BLASLT] No suitable hipBLASLt algo found, m: " << m << ", n: " << n << ", k: " << k << std::endl;
-    }
+    TORCH_CHECK(ret == HIPBLAS_STATUS_SUCCESS && returnedAlgoCount > 0,
+            "[BLASLT] no suitable hipBLASLt algorithm (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(ret), ")");
     void* mat_c_fake_ptr = reinterpret_cast<void*>(0x01);
     const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
-    hipblasLtMatmul(
+    auto st = hipblasLtMatmul(
             handle, matmul_desc, alpha.data_ptr(),
             mat_a.data_ptr(), mat_a_layout,
             mat_b.data_ptr(), mat_b_layout,
@@ -211,6 +211,9 @@ void w8a8_fp16_gemm(const torch::Tensor& mat_a, const torch::Tensor& mat_b,
             mat_c_fake_ptr, mat_c_layout,
             output.data_ptr(), output_layout,
             &heuristicResult[0].algo, nullptr, 0, stream);
+    TORCH_CHECK(st == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtMatmul failed (m=", m, ", n=", n, ", k=", k,
+            ", status=", static_cast<int>(st), ")");
     hipblasLtMatrixLayoutDestroy(mat_a_layout);
     hipblasLtMatrixLayoutDestroy(mat_b_layout);
     hipblasLtMatrixLayoutDestroy(mat_c_layout);
@@ -320,13 +323,12 @@ void w8a8_bf16_gemm(const torch::Tensor& mat_a, const torch::Tensor& mat_b,
             handle, matmul_desc,
             mat_a_layout, mat_b_layout, mat_c_layout, output_layout,
             pref, 1, heuristicResult, &returnedAlgoCount);
-    if (ret != HIPBLAS_STATUS_SUCCESS || returnedAlgoCount == 0) {
-        std::cerr << "[BLASLT] No suitable hipBLASLt algo found, m: " << m << ", n: " << n << ", k: " << k << std::endl;
-        return ;
-    }
+    TORCH_CHECK(ret == HIPBLAS_STATUS_SUCCESS && returnedAlgoCount > 0,
+            "[BLASLT] no suitable hipBLASLt algorithm (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(ret), ")");
     void* mat_c_fake_ptr = reinterpret_cast<void*>(0x01);
     const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
-    hipblasLtMatmul(
+    auto st = hipblasLtMatmul(
             handle, matmul_desc, alpha.data_ptr(),
             mat_a.data_ptr(), mat_a_layout,
             mat_b.data_ptr(), mat_b_layout,
@@ -334,6 +336,9 @@ void w8a8_bf16_gemm(const torch::Tensor& mat_a, const torch::Tensor& mat_b,
             mat_c_fake_ptr, mat_c_layout,
             output.data_ptr(), output_layout,
             &heuristicResult[0].algo, nullptr, 0, stream);
+    TORCH_CHECK(st == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtMatmul failed (m=", m, ", n=", n, ", k=", k,
+            ", status=", static_cast<int>(st), ")");
 
     hipblasLtMatrixLayoutDestroy(mat_a_layout);
     hipblasLtMatrixLayoutDestroy(mat_b_layout);
