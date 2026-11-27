@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <mutex>
+#include <string>
 #include <stdexcept>
 #include <vector>
 
@@ -14,6 +16,7 @@ void check(hipblasStatus_t status) {
 }
 
 struct Plan {
+    std::mutex submission;
     hipblasLtHandle_t handle{};
     hipblasLtMatmulDesc_t desc{};
     hipblasLtMatrixLayout_t a{}, b{}, c{}, d{};
@@ -74,7 +77,7 @@ struct Plan {
 }  // namespace
 
 extern "C" {
-void* create_plan(int m, int n, int k, void* scale_a, void* scale_b, size_t workspace) {
+void* lightop_minimax31_create_plan(int m, int n, int k, void* scale_a, void* scale_b, size_t workspace) {
     try {
         auto plan = std::make_unique<Plan>();
         plan->init(m, n, k, scale_a, scale_b, workspace);
@@ -84,17 +87,20 @@ void* create_plan(int m, int n, int k, void* scale_a, void* scale_b, size_t work
         return nullptr;
     }
 }
-void destroy_plan(Plan* plan) { delete plan; }
-int plan_count(Plan* plan) { return plan->algorithms.size(); }
-int solution_id(Plan* plan, int index) {
+void lightop_minimax31_destroy_plan(Plan* plan) { delete plan; }
+int lightop_minimax31_plan_count(Plan* plan) { return plan->algorithms.size(); }
+int lightop_minimax31_solution_id(Plan* plan, int index) {
     return hipblaslt_ext::getIndexFromAlgo(plan->algorithms.at(index).algo);
 }
-size_t solution_workspace(Plan* plan, int index) {
+size_t lightop_minimax31_solution_workspace(Plan* plan, int index) {
     return plan->algorithms.at(index).workspaceSize;
 }
-int run_plan(Plan* plan, int index, void* a, void* b, void* scale_a,
+int lightop_minimax31_run_plan(Plan* plan, int index, void* a, void* b, void* scale_a,
              void* scale_b, void* output, void* workspace, hipStream_t stream) {
     try {
+        // hipBLASLt consumes the descriptor at submission. Keep both scale
+        // pointer updates and GEMM submission atomic for a shared plan.
+        const std::lock_guard<std::mutex> lock(plan->submission);
         plan->scales(scale_a, scale_b);
         auto& result = plan->algorithms.at(index);
         return hipblasLtMatmul(plan->handle, plan->desc, &plan->alpha,

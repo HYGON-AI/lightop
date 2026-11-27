@@ -7,6 +7,7 @@
 # on it because an installed extension may predate the current ABI.
 PAGED_MQA_LOGITS_FP4_ABI = 3
 
+from ..minimax31_decode_lt import minimax31_project_qkv
 from ..minimax_qk_norm_rope import (
     minimax_qk_norm_rope,
     minimax_qk_norm_rope_fp8_cache,
@@ -86,6 +87,7 @@ from .rope import (
 __all__ = [
     "COMBINE_TOPK_SWA_INDICES_ABI",
     "combine_topk_swa_indices_hcu",
+    "minimax31_project_qkv",
     "minimax_qk_norm_rope",
     "minimax_qk_norm_rope_fp8_cache",
     "supports_minimax_qk_norm_rope",

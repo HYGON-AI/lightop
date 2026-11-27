@@ -7,7 +7,7 @@ import triton.language as tl
 @triton.jit
 def _partial(logits, partial, cols: tl.constexpr, tiles: tl.constexpr,
              block: tl.constexpr, shift: tl.constexpr):
-    row, tile = tl.program_id(0), tl.program_id(1)
+    row, tile = tl.program_id(0).to(tl.int64), tl.program_id(1)
     lane = tl.arange(0, block)
     col = tile * block + lane
     raw = tl.load(logits + row * cols + col, col < cols, other=-float("inf"))
@@ -24,7 +24,7 @@ def _partial(logits, partial, cols: tl.constexpr, tiles: tl.constexpr,
 @triton.jit
 def _finish(partial, output, tiles: tl.constexpr, block: tl.constexpr,
             shift: tl.constexpr, reduce_block: tl.constexpr):
-    row = tl.program_id(0)
+    row = tl.program_id(0).to(tl.int64)
     tile = tl.arange(0, reduce_block)
     packed = tl.load(partial + row * tiles + tile, tile < tiles, other=0).to(tl.uint32)
     score = packed >> shift
@@ -35,7 +35,7 @@ def _finish(partial, output, tiles: tl.constexpr, block: tl.constexpr,
 
 
 def argmax(logits, *, block=2048, warps=4, groups=1):
-    if logits.dtype != torch.bfloat16 or logits.ndim != 2 or not logits.is_contiguous():
+    if not logits.is_cuda or logits.dtype != torch.bfloat16 or logits.ndim != 2 or not logits.is_contiguous():
         return logits.argmax(dim=-1)
     rows, cols = logits.shape
     if cols < 32768 or rows == 0:

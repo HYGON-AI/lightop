@@ -79,7 +79,7 @@ struct QKCacheParams {
   uint8_t* index_cache;
   uint8_t* query;
   uint8_t* index_query;
-  int64_t value_row_stride, mapping_size, main_slots, index_slots;
+  int64_t value_row_stride, value_col_stride, mapping_size, main_slots, index_slots;
 };
 
 template<bool Saturate>
@@ -115,18 +115,44 @@ __device__ __forceinline__ void store_e4m3(
 // own a head, eight contiguous BF16 values per lane. Only the first eight
 // lanes rotate; lanes 8..15 preserve the BF16-rounded normalized values.
 template<int HeadsPerBlock, bool Neox, typename Cos, typename Pos,
-         typename Cache = bool>
+         typename Cache = bool, bool Transposed = false>
 __global__ __launch_bounds__(16*HeadsPerBlock)
 void minimax_qk_norm_rope_rotary64_vec8_kernel(
     QKParams p, const Cos* cs, const Pos* positions, Cache cache = false) {
   const int lane=threadIdx.x%16;
   const int64_t linear=int64_t(blockIdx.x)*HeadsPerBlock+threadIdx.x/16;
-  const int64_t row=linear/73;if(row>=p.rows)return;
-  int head=linear-row*73,part=0;
+  const int64_t row=Transposed ? int64_t(blockIdx.x)*16+threadIdx.x/16 : linear/73;
+  int head=Transposed ? blockIdx.y : linear-row*73,part=0;
   if(head>=64){head-=64;part=1;if(head>=4){head-=4;part=2;if(head>=4){head-=4;part=3;}}}
   const int count=part==0?64:(part==3?1:4);
-  const Bf16* src=p.x[part]+row*p.row_stride[part]+head*128;
-  const auto x=*reinterpret_cast<const QKPack<Bf16,8>*>(src+lane*8);
+  QKPack<Bf16,8> x;
+  QKPack<Bf16,8> values;
+  if constexpr (Transposed) {
+    static_assert(HeadsPerBlock == 16);
+    __shared__ __align__(16) uint16_t tile[2*16*128];
+    const Bf16* src = p.x[part] + int64_t(blockIdx.x)*16 + head*128*p.col_stride[part];
+    const int rr = threadIdx.x % 16;
+    const int stored_row = rr * 128;
+    #pragma unroll
+    for (int i = 0; i < 8; ++i) {
+      const int col = threadIdx.x / 16 + i*16;
+      const int lds = stored_row + (col ^ (rr*8));
+      tile[lds] = src[col*p.col_stride[part] + rr].x;
+      if (part == 1) {
+        const Bf16* val = cache.value + int64_t(blockIdx.x)*16 + head*128*cache.value_col_stride;
+        tile[16*128+lds] = val[col*cache.value_col_stride + rr].x;
+      }
+    }
+    __syncthreads();
+    const int rlocal = threadIdx.x / 16;
+    const int lds = rlocal*128 + ((lane*8) ^ (rlocal*8));
+    x = *reinterpret_cast<const QKPack<Bf16,8>*>(tile+lds);
+    if (part == 1) values = *reinterpret_cast<const QKPack<Bf16,8>*>(tile+16*128+lds);
+  } else {
+    if (row >= p.rows) return;
+    const Bf16* src=p.x[part]+row*p.row_stride[part]+head*128;
+    x=*reinterpret_cast<const QKPack<Bf16,8>*>(src+lane*8);
+  }
   const auto w=*reinterpret_cast<const QKPack<Bf16,8>*>(p.weight[part]+lane*8);
   float inv;
   if constexpr (std::is_same_v<Cache, QKCacheParams>) {
@@ -211,7 +237,8 @@ void minimax_qk_norm_rope_rotary64_vec8_kernel(
           const int64_t offset = (slot * 4 + head) * 128 + col;
           const Bf16* value = cache.value + row * cache.value_row_stride;
           store_e4m3<true>(cache.key_cache + offset, out);
-          store_e4m3<true>(cache.value_cache + offset,
+          if constexpr (Transposed) store_e4m3<true>(cache.value_cache + offset, values);
+          else store_e4m3<true>(cache.value_cache + offset,
               *reinterpret_cast<const QKPack<Bf16, 8>*>(value + head * 128 + col));
         }
       } else if (part == 3 && loc > 0 && loc < cache.index_slots) {
@@ -343,10 +370,15 @@ std::vector<torch::Tensor> minimax_qk_norm_rope_fp8_cache(
     return reinterpret_cast<uintptr_t>(t.data_ptr()) % 16 == 0;
   };
   const auto device = qkv.device();
-  TORCH_CHECK(qkv.is_cuda() && qkv.scalar_type() == at::kBFloat16 && qkv.dim() == 2 &&
-              qkv.size(1) == packed_width && qkv.stride(1) == 1 &&
-              qkv.stride(0) % 8 == 0 && aligned(qkv),
+  TORCH_CHECK(qkv.is_cuda() && qkv.scalar_type() == at::kBFloat16 &&
+              qkv.dim() == 2 && qkv.size(1) == packed_width && aligned(qkv),
               "expected aligned BF16 [rows, 9856] packed M3.1 QKV");
+  const bool transposed = qkv.size(0) > 0 && qkv.size(0) % 16 == 0 &&
+                          qkv.stride(0) == 1 && qkv.stride(1) == qkv.size(0);
+  TORCH_CHECK((qkv.stride(1) == 1 && qkv.stride(0) % 8 == 0) ||
+                  (transposed && heads_per_block == 16),
+              "expected aligned row-major QKV or dense transposed QKV "
+              "with a multiple of 16 rows and heads_per_block=16");
   QKParams p{};
   p.rows = qkv.size(0);
   p.rotary = 64;
@@ -359,9 +391,10 @@ std::vector<torch::Tensor> minimax_qk_norm_rope_fp8_cache(
     TORCH_CHECK(weight.device() == device && weight.scalar_type() == at::kBFloat16 &&
                 weight.dim() == 1 && weight.numel() == 128 && weight.is_contiguous() &&
                 aligned(weight), "expected aligned BF16 Gemma weights [128]");
-    p.x[i] = p.rows ? qkv.data_ptr<Bf16>() + starts[i] : nullptr;
+    p.x[i] = p.rows ? qkv.data_ptr<Bf16>() + starts[i] * qkv.stride(1) : nullptr;
     p.weight[i] = weight.data_ptr<Bf16>();
     p.row_stride[i] = qkv.stride(0);
+    p.col_stride[i] = qkv.stride(1);
   }
   const auto check_meta = [&](const torch::Tensor& t, at::ScalarType dtype) {
     TORCH_CHECK(t.device() == device && t.scalar_type() == dtype &&
@@ -392,13 +425,20 @@ std::vector<torch::Tensor> minimax_qk_norm_rope_fp8_cache(
     return reinterpret_cast<uint8_t*>(t.data_ptr<c10::Float8_e4m3fn>());
   };
   QKCacheParams cache{
-      qkv.data_ptr<Bf16>() + 8704, locations.data_ptr<int64_t>(),
+      qkv.data_ptr<Bf16>() + 8704 * qkv.stride(1), locations.data_ptr<int64_t>(),
       main_mapping.data_ptr<int32_t>(), bytes(key_cache), bytes(value_cache),
-      bytes(index_cache), bytes(query), bytes(index_query), qkv.stride(0),
+      bytes(index_cache), bytes(query), bytes(index_query), qkv.stride(0), qkv.stride(1),
       main_mapping.numel(), key_cache.size(0), index_cache.size(0)};
   auto stream = at::cuda::getCurrentCUDAStream();
   const auto launch = [&](auto* cos_sin) {
     using Cos = std::remove_pointer_t<decltype(cos_sin)>;
+    if (transposed) {
+      hipLaunchKernelGGL((minimax_qk_norm_rope_rotary64_vec8_kernel<
+          16, true, Cos, int64_t, QKCacheParams, true>),
+          dim3(p.rows / 16, 73), dim3(256), 0, stream, p, cos_sin,
+          positions.data_ptr<int64_t>(), cache);
+      return;
+    }
     const dim3 grid((p.rows * 73 + heads_per_block - 1) / heads_per_block);
 #define QK_H(H) hipLaunchKernelGGL((minimax_qk_norm_rope_rotary64_vec8_kernel<H, true, Cos, int64_t, QKCacheParams>), grid, dim3(16 * H), 0, stream, p, cos_sin, positions.data_ptr<int64_t>(), cache)
     switch (heads_per_block) {
