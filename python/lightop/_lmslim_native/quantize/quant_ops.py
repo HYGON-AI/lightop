@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
 import torch
 import torch.nn.functional as F
 from typing import Optional, List
@@ -22,6 +23,8 @@ if use_lightop:
 from ...op import rms_norm_dynamic_per_token_quant
 from ... import op as lightop_native
 from ...fuse_silu_mul_quant import fuse_silu_mul_quant
+
+logger = logging.getLogger(__name__)
 
 
 def awq_gemm(input: torch.Tensor, weight: torch.Tensor,
@@ -595,16 +598,22 @@ def hipblaslt_w8a8_channelwise_gemm(
     assert bias is None or bias.dtype == out_dtype
     assert a.shape[-1] == b.shape[-1]
 
-    arch = torch.cuda.get_device_properties(a.device).gcnArchName.split(":", 1)[0]
-    if arch == "gfx946":
+    try:
+        res = torch.ops.lmslim.hipblaslt_gemm_channelwise(
+                b, a, scale_b, scale_a, out_dtype, n, m, k,
+                b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
+        return True, res
+    except Exception as exc:  # noqa: BLE001 - 底层是第三方库，异常类型不稳定
+        # C++ 侧已改为抛异常（不再返回未初始化内存）。这里回退到 torch 实现保证
+        # 数值正确，同时把失败原因打出来，避免"静默算错"。
+        logger.warning(
+            "hipblaslt_w8a8_channelwise_gemm: hipBLASLt 不可用"
+            "(m=%s, n=%s, k=%s, out_dtype=%s)，回退 torch 实现: %s",
+            m, n, k, out_dtype, exc)
         return True, _channelwise_gemm_torch(
             a.reshape(-1, m, k), b.reshape(-1, n, k),
             scale_a.reshape(-1, m, 1), scale_b.reshape(-1, n, 1), out_dtype, bias,
         )
-
-    res = torch.ops.lmslim.hipblaslt_gemm_channelwise(
-            b, a, scale_b, scale_a, out_dtype, n, m, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
-    return True, res
 
 def hipblaslt_w8a8_channelwise_gemm_kme(
         a : torch.Tensor,
@@ -787,18 +796,31 @@ def hipblaslt_w8a8_gemm(a : torch.Tensor,
         )
         return ok, result.squeeze(0)
 
+    if out_dtype not in (torch.float16, torch.bfloat16):
+        raise ValueError(f"Unsupported out_dtype: {out_dtype}")
+
     d = torch.empty((m, n), dtype=out_dtype, device = 'cuda')
 
-    if out_dtype == torch.float16:
-        torch.ops.lmslim.blaslt_w8a8_fp16_gemm(
-                b, a, scale_b, scale_a, d, m, n, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
+    try:
+        if out_dtype == torch.float16:
+            torch.ops.lmslim.blaslt_w8a8_fp16_gemm(
+                    b, a, scale_b, scale_a, d, m, n, k,
+                    b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
+        else:
+            torch.ops.lmslim.blaslt_w8a8_bf16_gemm(
+                    b, a, scale_b, scale_a, d, m, n, k,
+                    b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
         return True, d
-    elif out_dtype == torch.bfloat16:
-        torch.ops.lmslim.blaslt_w8a8_bf16_gemm(
-                b, a, scale_b, scale_a, d, m, n, k, b.shape[0] if b.dim() == 3 else 1, 'TN', bias)
-        return True, d
-    else:
-        raise ValueError(f"Unsupported out_dtype: {out_dtype}")
+    except Exception as exc:  # noqa: BLE001 - 底层是第三方库，异常类型不稳定
+        # C++ 侧已改为抛异常；这里退到 channelwise 实现（它本身还会退到 torch），
+        # 保证不出错，同时把原因打出来。
+        logger.warning(
+            "hipblaslt_w8a8_gemm: hipBLASLt %s gemm 不可用(m=%s, n=%s, k=%s)，"
+            "回退 channelwise 实现: %s",
+            "fp16" if out_dtype == torch.float16 else "bf16", m, n, k, exc)
+        ok, result = hipblaslt_w8a8_channelwise_gemm(
+            a, b, scale_a, scale_b, m, n, k, transpose_flag, out_dtype, bias)
+        return ok, result.squeeze(0)
 
 def lo_rms_norm_dynamic_per_token_quant_real(
     input: torch.Tensor,

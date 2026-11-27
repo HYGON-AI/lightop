@@ -33,7 +33,15 @@ def test_gfx946_dispatch(monkeypatch, cus):
 
 
 @pytest.mark.parametrize("batch", [1, 2])
-def test_gfx946_scaled_gemm_fallbacks(monkeypatch, batch):
+def test_gfx946_scaled_gemm_paths(monkeypatch, batch):
+    """gfx946 的 scaled GEMM 三个入口。
+
+    早期版本在这里断言的是纯 torch 的 CPU fallback；channelwise 现在走真实的
+    hipblasLt 通道量化算子了，所以本用例必须把张量放到设备上，否则根本没
+    覆盖到 GPU 代码路径。
+    """
+    if not torch.cuda.is_available():
+        pytest.skip("requires a HIP device")
     from lightop.gemm_ops import (
         BlockSize,
         hipblaslt_w8a8_blockwise_gemm,
@@ -45,11 +53,11 @@ def test_gfx946_scaled_gemm_fallbacks(monkeypatch, batch):
     monkeypatch.setattr(torch.cuda, "get_device_properties", lambda device: props)
     m, n, k = 3, 7, 128
     rng = torch.Generator().manual_seed(946)
-    a = torch.randint(-4, 5, (batch, m, k), generator=rng, dtype=torch.int8)
-    b = torch.randint(-4, 5, (batch, n, k), generator=rng, dtype=torch.int8)
-    sa = torch.rand(batch, m, 1, generator=rng)
-    sb = torch.rand(batch, n, 1, generator=rng)
-    bias = torch.rand(batch, n, generator=rng).half()
+    a = torch.randint(-4, 5, (batch, m, k), generator=rng, dtype=torch.int8).cuda()
+    b = torch.randint(-4, 5, (batch, n, k), generator=rng, dtype=torch.int8).cuda()
+    sa = torch.rand(batch, m, 1, generator=rng).cuda()
+    sb = torch.rand(batch, n, 1, generator=rng).cuda()
+    bias = torch.rand(batch, n, generator=rng).half().cuda()
     ref = (a.float() @ b.float().transpose(1, 2)) * sa * sb.transpose(1, 2)
     ref = (ref + bias[:, None, :]).half()
     args = (a, b, sa, sb, m, n, k, "NT", torch.float16, bias)
@@ -60,7 +68,7 @@ def test_gfx946_scaled_gemm_fallbacks(monkeypatch, batch):
     assert ok
     torch.testing.assert_close(result, ref.squeeze(0))
 
-    scale_b = torch.rand(batch, 1, 1, generator=rng)
+    scale_b = torch.rand(batch, 1, 1, generator=rng).cuda()
     ok, result = hipblaslt_w8a8_blockwise_gemm(
         a, b.transpose(1, 2).contiguous(), sa, scale_b, m, n, k, "NN",
         torch.float16, BlockSize.block_128x128, bias,

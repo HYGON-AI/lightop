@@ -131,8 +131,7 @@ hipDataType getDataType(const at::Tensor& t )
         case at::kFloat8_e4m3fn:  return HIP_R_8F_E4M3;
         case at::kFloat8_e5m2:    return HIP_R_8F_E5M2;
         default:
-            std::cerr << "Unsupported tensor dtype for hipDataType" << std::endl;
-            std::exit(EXIT_FAILURE);
+            TORCH_CHECK(false, "unsupported tensor dtype for hipDataType");
     }
 
 }
@@ -150,8 +149,7 @@ hipDataType getDataType(const at::ScalarType t )
         case at::kFloat8_e4m3fn:  return HIP_R_8F_E4M3;
         case at::kFloat8_e5m2:    return HIP_R_8F_E5M2;
         default:
-            std::cerr << "Unsupported tensor dtype for hipDataType" << std::endl;
-            std::exit(EXIT_FAILURE);
+            TORCH_CHECK(false, "unsupported tensor dtype for hipDataType");
     }
 
 }
@@ -164,8 +162,7 @@ hipblasComputeType_t getComputeType(const at::Tensor& t)
     else if (dtype == at::kInt) return HIPBLAS_COMPUTE_32I;
     else
     {
-        std::cerr << "Unsupported tensor dtype for hipblasComputeType" << std::endl;
-        std::exit(EXIT_FAILURE);   // 直接终止程序
+        TORCH_CHECK(false, "unsupported tensor dtype for hipblasComputeType");
     }
 }
 
@@ -297,10 +294,11 @@ torch::Tensor hipblaslt_gemm_channelwise(const torch::Tensor& d_A, const torch::
             handle, matmul_desc,
             matA, matB, matC, matD,
             pref, 1, heuristicResult, &returnedAlgoCount);
-    if (status != HIPBLAS_STATUS_SUCCESS || returnedAlgoCount == 0) {
-        std::cerr << "[BLASLT] No suitable hipBLASLt algo found, m: "
-                << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    // heuristicResult[0] 在无可用算法时是未初始化的：继续执行会拿垃圾 algo
+    // 去跑 matmul，最终把 at::empty 的未初始化内存当结果返回，表现为静默算错。
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS && returnedAlgoCount > 0,
+            "[BLASLT] no suitable hipBLASLt algorithm for channelwise GEMM (m=", m,
+            ", n=", n, ", k=", k, ", status=", static_cast<int>(status), ")");
 
     const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
     status=hipblasLtMatmul(
@@ -311,10 +309,9 @@ torch::Tensor hipblaslt_gemm_channelwise(const torch::Tensor& d_A, const torch::
             output.data_ptr(), matC,
             output.data_ptr(), matD,
             &heuristicResult[0].algo, nullptr, 0, stream);
-    if (status != HIPBLAS_STATUS_SUCCESS ) {
-        std::cerr << "[BLASLT] hipblasLtMatmul  failed , m: "
-                << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtMatmul failed for channelwise GEMM (m=", m,
+            ", n=", n, ", k=", k, ", status=", static_cast<int>(status), ")");
     hipblasLtMatrixLayoutDestroy(matA);
     hipblasLtMatrixLayoutDestroy(matB);
     hipblasLtMatrixLayoutDestroy(matC);
@@ -439,10 +436,9 @@ torch::Tensor hipblaslt_gemm_channelwise_kme(const torch::Tensor& d_A, const tor
             handle, matmul_desc,
             matA, matB, matC, matD,
             pref, 1, heuristicResult, &returnedAlgoCount);
-    if (status != HIPBLAS_STATUS_SUCCESS || returnedAlgoCount == 0) {
-        std::cerr << "[BLASLT-KME] No suitable hipBLASLt algo found, m: "
-                << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS && returnedAlgoCount > 0,
+            "[BLASLT-KME] no suitable hipBLASLt algorithm (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(status), ")");
 
     const float alpha_f = alpha.scalar_type() == at::ScalarType::Float
             ? alpha.item<float>() : static_cast<float>(alpha.item<int>());
@@ -458,10 +454,9 @@ torch::Tensor hipblaslt_gemm_channelwise_kme(const torch::Tensor& d_A, const tor
             output.data_ptr(), matC,
             output.data_ptr(), matD,
             &heuristicResult[0].algo, nullptr, 0, stream);
-    if (status != HIPBLAS_STATUS_SUCCESS ) {
-        std::cerr << "[BLASLT-KME] hipblasLtMatmul failed, m: "
-                << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT-KME] hipblasLtMatmul failed (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(status), ")");
     hipblasLtMatrixLayoutDestroy(matA);
     hipblasLtMatrixLayoutDestroy(matB);
     hipblasLtMatrixLayoutDestroy(matC);
@@ -551,10 +546,9 @@ torch::Tensor hipblaslt_gemm_channelwise_fast(const torch::Tensor& d_A, const to
                 bias_ptr,bias_type,stream);
 
     }
-    if(status != HIPBLAS_STATUS_SUCCESS){
-        std::cerr << "[BLASLT] hipblasLtGemmExQ or hipblasLtStridedBatchedGemmExQ failed , m: "
-                << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtGemmExQ/StridedBatchedGemmExQ failed (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(status), ")");
 
     return output;
 }
@@ -588,21 +582,12 @@ torch::Tensor hipblaslt_gemm_blockwise(const torch::Tensor& d_A, const torch::Te
     }
 
 
-    if (batch!=1)
-    {
-        std::cerr<<"[BLASLT] blockwise does not currently support batch > 1"<<std::endl;
-        return output;
-    }
-    if (trans_a != HIPBLAS_OP_N || trans_b != HIPBLAS_OP_N)
-    {
-        std::cerr<<"[BLASLT] blockwise Only supports transpose type NN"<<std::endl;
-        return output;
-    }
-    if (A_type != HIP_R_8F_E4M3 || B_type  != HIP_R_8F_E4M3 )
-    {
-        std::cerr<<"[BLASLT] blockwise Only supports datatype fp8"<<std::endl;
-        return output;
-    }
+    TORCH_CHECK(batch == 1,
+            "[BLASLT] blockwise supports only batch == 1 (got ", batch, ")");
+    TORCH_CHECK(trans_a == HIPBLAS_OP_N && trans_b == HIPBLAS_OP_N,
+            "[BLASLT] blockwise supports only transpose type NN");
+    TORCH_CHECK(A_type == HIP_R_8F_E4M3 && B_type == HIP_R_8F_E4M3,
+            "[BLASLT] blockwise supports only fp8 (e4m3) operands");
 
     int64_t stride_a = m * k;
     int64_t stride_b = n * k;
@@ -675,8 +660,7 @@ torch::Tensor hipblaslt_gemm_blockwise(const torch::Tensor& d_A, const torch::Te
             modeB=HIPBLASLT_MATMUL_MATRIX_SCALE_VEC64_32F;
             break;
         default:
-            std::cerr<<"[BLASLT] This block is currently not supported"<<std::endl;
-            return output;
+            TORCH_CHECK(false, "[BLASLT] unsupported block mode");
 
     }
 
@@ -716,9 +700,9 @@ torch::Tensor hipblaslt_gemm_blockwise(const torch::Tensor& d_A, const torch::Te
             handle, matmul_desc,
             matA, matB, matC, matD,
             pref, 1, heuristicResult, &returnedAlgoCount);
-    if (status != HIPBLAS_STATUS_SUCCESS || returnedAlgoCount == 0) {
-        std::cerr << "[BLASLT] No suitable hipBLASLt algo found, m: " << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS && returnedAlgoCount > 0,
+            "[BLASLT] no suitable hipBLASLt algorithm for blockwise GEMM (m=", m,
+            ", n=", n, ", k=", k, ", status=", static_cast<int>(status), ")");
 
     const hipStream_t stream = at::hip::getCurrentHIPStreamMasqueradingAsCUDA();
     status=hipblasLtMatmul(
@@ -729,9 +713,9 @@ torch::Tensor hipblaslt_gemm_blockwise(const torch::Tensor& d_A, const torch::Te
             output.data_ptr(), matC,
             output.data_ptr(), matD,
             &heuristicResult[0].algo, nullptr, 0, stream);
-    if (status != HIPBLAS_STATUS_SUCCESS ) {
-        std::cerr << "[BLASLT] hipblasLtMatmul  failed , m: " << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtMatmul failed for blockwise GEMM (m=", m,
+            ", n=", n, ", k=", k, ", status=", static_cast<int>(status), ")");
     hipblasLtMatrixLayoutDestroy(matA);
     hipblasLtMatrixLayoutDestroy(matB);
     hipblasLtMatrixLayoutDestroy(matC);
@@ -764,21 +748,12 @@ torch::Tensor hipblaslt_gemm_blockwise_fast(const torch::Tensor& d_A, const torc
         C_type= HIP_R_32I;
     }
 
-    if (batch!=1)
-    {
-        std::cerr<<"[BLASLT] blockwise does not currently support batch > 1"<<std::endl;
-        return output;
-    }
-    if (trans_a != HIPBLAS_OP_N || trans_b != HIPBLAS_OP_N)
-    {
-        std::cerr<<"[BLASLT] blockwise Only supports transpose type NN"<<std::endl;
-        return output;
-    }
-    if (A_type != HIP_R_8F_E4M3 || B_type  != HIP_R_8F_E4M3 )
-    {
-        std::cerr<<"[BLASLT] blockwise Only supports datatype fp8"<<std::endl;
-        return output;
-    }
+    TORCH_CHECK(batch == 1,
+            "[BLASLT] blockwise_fast supports only batch == 1 (got ", batch, ")");
+    TORCH_CHECK(trans_a == HIPBLAS_OP_N && trans_b == HIPBLAS_OP_N,
+            "[BLASLT] blockwise_fast supports only transpose type NN");
+    TORCH_CHECK(A_type == HIP_R_8F_E4M3 && B_type == HIP_R_8F_E4M3,
+            "[BLASLT] blockwise_fast supports only fp8 (e4m3) operands");
 
 
     size_t lda = trans_a==HIPBLAS_OP_N ? m : k;
@@ -802,8 +777,7 @@ torch::Tensor hipblaslt_gemm_blockwise_fast(const torch::Tensor& d_A, const torc
             modeB=HIPBLASLT_MATMUL_MATRIX_SCALE_VEC64_32F;
             break;
         default:
-            std::cerr<<"[BLASLT] This block is currently not supported"<<std::endl;
-            return output;
+            TORCH_CHECK(false, "[BLASLT] unsupported block mode");
 
     }
 
@@ -852,9 +826,9 @@ torch::Tensor hipblaslt_gemm_blockwise_fast(const torch::Tensor& d_A, const torc
                 bias_ptr,bias_type,stream);
 
     }
-    if(status != HIPBLAS_STATUS_SUCCESS){
-        std::cerr << "[BLASLT] hipblasLtGemmExQ or hipblasLtStridedBatchedGemmExQ failed , m: " << m << ", n: " << n << ", k: " << k << " status: "<<status<<std::endl;
-    }
+    TORCH_CHECK(status == HIPBLAS_STATUS_SUCCESS,
+            "[BLASLT] hipblasLtGemmExQ/StridedBatchedGemmExQ failed (m=", m, ", n=", n,
+            ", k=", k, ", status=", static_cast<int>(status), ")");
 
     return output;
 }
