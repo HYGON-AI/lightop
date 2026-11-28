@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import json
 import os
 
 import pytest
@@ -138,6 +139,145 @@ def test_product_rounding_ep_matches_torch(hidden, expect_m, use_smooth):
     )
     for a, b in zip(dispatched, actual):
         assert torch.equal(a[valid], b[valid])
+
+
+@pytest.mark.parametrize(
+    "experts,capacity,hidden,expect_m,round_silu,dtype,compact_waves,fallback_grid_y",
+    [
+        (experts, capacity, 2304, hint, True, torch.bfloat16,
+         2 if hint <= 3 else 1, None)
+        for experts, capacities in (
+            (48, (1024, 2048)), (24, (2048, 4096)), (12, (4096, 8192))
+        )
+        for capacity in capacities for hint in range(1, 26)
+    ] + [
+        (experts, capacity, 2304, hint, True, torch.bfloat16,
+         2 if hint <= 6 else 1, None)
+        for experts, capacities in (
+            (16, (1024, 2048)), (8, (2048, 4096)), (4, (4096, 8192))
+        )
+        for capacity in capacities for hint in range(1, 34)
+    ] + [
+        (48, 2048, 2304, 26, True, torch.bfloat16, 0, 26),
+        (16, 2048, 2304, 34, True, torch.bfloat16, 0, 34),
+        (48, 2048, 2304, 0, True, torch.bfloat16, 0, 16),
+        (16, 2048, 2304, 0, True, torch.bfloat16, 0, 16),
+        (48, 3072, 2304, 25, True, torch.bfloat16, 0, 25),
+        (24, 2048, 2304, 0, True, torch.bfloat16, 0, 1),
+        (12, 4096, 2304, 26, True, torch.bfloat16, 0, 26),
+        (8, 2048, 2304, 0, True, torch.bfloat16, 0, 1),
+        (4, 4096, 2304, 34, True, torch.bfloat16, 0, 34),
+        (24, 512, 2304, 7, True, torch.bfloat16, 0, 7),
+        (12, 4096, 2304, 1, False, torch.bfloat16, 0, 1),
+        (48, 512, 2304, 7, True, torch.bfloat16, 0, 16),
+        (16, 512, 2304, 8, True, torch.bfloat16, 0, 16),
+        (48, 1024, 2304, 7, False, torch.bfloat16, 0, 16),
+        (16, 2048, 2304, 32, False, torch.bfloat16, 0, 32),
+        (48, 128, 128, 7, True, torch.bfloat16, 0, 7),
+        (32, 128, 2304, 7, True, torch.bfloat16, 0, 7),
+        (48, 128, 2304, 7, True, torch.float16, 0, 7),
+    ],
+)
+def test_gfx936_ep_compact_rows_match_fallback(
+    experts, capacity, hidden, expect_m, round_silu, dtype, compact_waves,
+    fallback_grid_y, tmp_path,
+):
+    if not torch.version.hip or not torch.cuda.is_available():
+        pytest.skip("requires a ROCm device")
+    if not torch.cuda.get_device_properties(0).gcnArchName.startswith("gfx936"):
+        pytest.skip("requires gfx936")
+
+    torch.manual_seed(1124)
+    x = torch.empty(
+        (experts, capacity, 2 * hidden), device="cuda", dtype=dtype
+    )
+    counts = [0] * experts
+    # Include empty experts, uneven rows, and a hot expert at the C256 edge.
+    counts[1], counts[experts // 2], counts[-1] = (
+        1, min(capacity, max(17, expect_m * experts)), 33
+    )
+    if compact_waves and expect_m == (25 if experts in (12, 24, 48) else 33):
+        counts[experts // 2] = capacity
+    if compact_waves == 2 and expect_m == 1:
+        # An underestimated hint must still process multiple tasks per block.
+        # This exercises wave_max reuse across iterations of the 480-CTA grid.
+        counts[experts // 2] = capacity
+        assert sum(counts) > 480
+    for expert, count in enumerate(counts):
+        if count:
+            x[expert, :count].normal_().mul_(4)
+    mask = torch.tensor(counts, device=x.device, dtype=torch.int32)
+
+    expected_q = torch.full(
+        (experts, capacity, hidden), 99, device=x.device, dtype=torch.int8
+    )
+    expected_scales = torch.full(
+        (experts, capacity, 1), -1.0, device=x.device, dtype=torch.float32
+    )
+    q, scales = expected_q.clone(), expected_scales.clone()
+    # expect_m=0 selects the existing per-expert kernel on the same input.
+    fuse_silu_mul_clamp_quant_ep(
+        x, 10.0, mask, 0, expected_q, expected_scales, round_silu=round_silu
+    )
+    # Warm up outside profiling so only the dispatched operator is inspected.
+    fuse_silu_mul_clamp_quant_ep(
+        x, 10.0, mask, expect_m, q, scales, round_silu=round_silu
+    )
+    torch.cuda.synchronize()
+    with torch.profiler.profile(
+        activities=[torch.profiler.ProfilerActivity.CPU,
+                    torch.profiler.ProfilerActivity.CUDA]
+    ) as prof:
+        fuse_silu_mul_clamp_quant_ep(
+            x, 10.0, mask, expect_m, q, scales, round_silu=round_silu
+        )
+        torch.cuda.synchronize()
+    trace = tmp_path / "dispatch.json"
+    prof.export_chrome_trace(str(trace))
+    kernels = [e for e in json.loads(trace.read_text())["traceEvents"]
+               if e.get("cat") == "kernel"]
+    assert len(kernels) == 1
+    kernel = kernels[0]
+    if compact_waves:
+        assert f"swiglu_compact_rows<{compact_waves}>" in kernel["name"]
+        assert kernel["args"]["grid"] == [480, 1, 1]
+        assert kernel["args"]["block"] == (
+            [128, 1, 1] if compact_waves == 2 else [256, 1, 1]
+        )
+    else:
+        assert "swiglu_clamp_quant_kernel<" in kernel["name"]
+        assert kernel["args"]["grid"] == [experts, fallback_grid_y, 1]
+    assert torch.equal(q, expected_q)
+    assert torch.equal(scales, expected_scales)
+
+    if compact_waves == 2 and expect_m == 1:
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            fuse_silu_mul_clamp_quant_ep(
+                x, 10.0, mask, expect_m, q, scales, round_silu=True
+            )
+        # Replay with changed values and an empty intermediate workload.
+        # The graph must reread masked_m, preserve inactive output, and remain
+        # bitwise equal to the existing per-expert kernel on every replay.
+        for empty in (False, True, False):
+            for expert, count in enumerate(counts):
+                if count:
+                    x[expert, :count].normal_().mul_(4)
+            mask.copy_(torch.tensor(
+                [0] * experts if empty else counts,
+                device=x.device, dtype=torch.int32,
+            ))
+            q.fill_(99)
+            scales.fill_(-1)
+            expected_q.fill_(99)
+            expected_scales.fill_(-1)
+            graph.replay()
+            fuse_silu_mul_clamp_quant_ep(
+                x, 10.0, mask, 0, expected_q, expected_scales,
+                round_silu=True,
+            )
+            assert torch.equal(q, expected_q)
+            assert torch.equal(scales, expected_scales)
 
 
 def test_product_rounding_graph_replay_matches_torch():

@@ -103,6 +103,98 @@ __device__ __forceinline__ scalar_t swiglu_apply_smooth(
   return value;
 }
 
+#ifdef USE_ROCM
+template <int kWavesPerRow>
+__global__ void swiglu_compact_rows(
+    const c10::BFloat16* __restrict__ input, int8_t* __restrict__ output,
+    float* __restrict__ scales, const int32_t* __restrict__ masked_m,
+    int experts, int capacity, float limit) {
+  using BF16 = c10::BFloat16;
+  constexpr int kHidden = 2304;
+  constexpr int kVec = 4;
+  constexpr int kWorkers = kWavesPerRow * 64;
+  constexpr int kChunks = (kHidden + kWorkers * kVec - 1) / (kWorkers * kVec);
+  struct alignas(8) InputVec {
+    BF16 v[kVec];
+  };
+  struct alignas(4) OutputVec {
+    int8_t v[kVec];
+  };
+
+  const int lane = threadIdx.x & 63;
+  const int wave = threadIdx.x / 64;
+  // Flatten the valid expert rows using one prefix sum per wave.
+  int prefix =
+      lane < experts ? ::max(0, ::min(masked_m[lane], capacity)) : 0;
+#pragma unroll
+  for (int delta = 1; delta < 64; delta *= 2) {
+    const int add = __shfl_up(prefix, delta, 64);
+    if (lane >= delta)
+      prefix += add;
+  }
+  const int total = __shfl(prefix, 63, 64);
+  const int rows_per_block = blockDim.x / kWorkers;
+  const int worker = threadIdx.x % kWorkers;
+  __shared__ float wave_max[2];
+  for (int task = blockIdx.x * rows_per_block + threadIdx.x / kWorkers;
+       task < total; task += gridDim.x * rows_per_block) {
+    const int expert = __popcll(__ballot(prefix <= task));
+    const int previous = __shfl(prefix, ::max(expert - 1, 0), 64);
+    // Keep the original expert-major layout for W2.
+    const int row = expert * capacity + task - (expert ? previous : 0);
+    const int64_t offset = static_cast<int64_t>(row) * kHidden;
+    BF16 values[kChunks][kVec];
+    float row_max = 0.0f;
+#pragma unroll
+    for (int chunk = 0; chunk < kChunks; ++chunk) {
+      const int col = (chunk * kWorkers + worker) * kVec;
+      if (col < kHidden) {
+        const auto g =
+            *reinterpret_cast<const InputVec*>(input + 2 * offset + col);
+        const auto u = *reinterpret_cast<const InputVec*>(
+            input + 2 * offset + kHidden + col);
+#pragma unroll
+        for (int j = 0; j < kVec; ++j) {
+          const auto v =
+              swiglu_clamp_value<BF16, false, true>(g.v[j], u.v[j], limit);
+          values[chunk][j] = v;
+          row_max = fmaxf(row_max, fabsf(static_cast<float>(v)));
+        }
+      }
+    }
+#pragma unroll
+    for (int delta = 32; delta > 0; delta /= 2)
+      row_max = fmaxf(row_max, __shfl_xor(row_max, delta, 64));
+    if constexpr (kWavesPerRow == 2) {
+      if (lane == 0)
+        wave_max[wave] = row_max;
+      __syncthreads();
+      row_max = fmaxf(wave_max[0], wave_max[1]);
+    }
+    row_max = fmaxf(row_max, 1.0e-10f);
+    if (worker == 0)
+      scales[row] = row_max / 127.0f;
+    const float inv_scale = 127.0f / row_max;
+#pragma unroll
+    for (int chunk = 0; chunk < kChunks; ++chunk) {
+      const int col = (chunk * kWorkers + worker) * kVec;
+      if (col < kHidden) {
+        OutputVec q;
+#pragma unroll
+        for (int j = 0; j < kVec; ++j)
+          q.v[j] = swiglu_clamp_float_to_int8_rn(
+              static_cast<float>(values[chunk][j]) * inv_scale);
+        *reinterpret_cast<OutputVec*>(output + offset + col) = q;
+      }
+    }
+    // Both waves must finish reading wave_max before either wave reuses it
+    // for the next grid-stride task. Keep this barrier inside the loop.
+    if constexpr (kWavesPerRow == 2)
+      __syncthreads();
+  }
+}
+#endif
+
 template <typename scalar_t,
           int vec,
           int block_size,
@@ -574,13 +666,53 @@ static void fuse_silu_mul_clamp_quant_impl(
       int64_t expected_blocks =
           expect_m >= 0 ? int64_t(expect_m) : tokens_per_expert;
 #ifdef USE_ROCM
-      // Provide parallel expert rows for routing imbalance while retaining
-      // the existing INT8 kernel and all row arithmetic.
+      // Local experts for 384-expert Verify and 128-expert Draft at
+      // EP8/EP16/EP32. All fit the compact kernel's 64-lane expert scan.
+      const bool verify_layout =
+          num_experts == 48 || num_experts == 24 || num_experts == 12;
+      const bool draft_layout =
+          num_experts == 16 || num_experts == 8 || num_experts == 4;
       if (input.scalar_type() == at::ScalarType::BFloat16 && d == 2304 &&
           !use_gelu && smooth_scale_ptr == nullptr &&
-          (num_experts == 16 || num_experts == 48) &&
-          std::strncmp(at::cuda::getDeviceProperties(input.get_device())->gcnArchName, "gfx936", 6) == 0) {
-        expected_blocks = std::max<int64_t>(expected_blocks, 16);
+          (verify_layout || draft_layout) &&
+          std::strncmp(
+              at::cuda::getDeviceProperties(input.get_device())->gcnArchName,
+              "gfx936", 6) == 0) {
+        // Bound the fast path by operator dimensions, not a single batch.
+        // Cover Decode through C256 and capacities produced by 128/256-row
+        // DeepEP buffers across EP8/EP16/EP32. Expected expert load is global;
+        // do not multiply its limit by EP size. Draft retains rounding headroom.
+        const int max_compact_expect_m = verify_layout ? 25 : 33;
+        const bool compact_shape =
+            (tokens_per_expert == 1024 || tokens_per_expert == 2048 ||
+             tokens_per_expert == 4096 || tokens_per_expert == 8192) &&
+            expect_m >= 1 && expect_m <= max_compact_expect_m;
+        if constexpr (round_silu) {
+          if (compact_shape) {
+            const at::cuda::OptionalCUDAGuard guard(device_of(input));
+            const cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+            const bool two_waves = expect_m <= (verify_layout ? 3 : 6);
+            constexpr int blocks = 480;
+            const auto* in = input.data_ptr<c10::BFloat16>();
+            auto* out = output.data_ptr<int8_t>();
+            auto* scale = scales.data_ptr<float>();
+            const float limit_f = static_cast<float>(limit);
+            if (two_waves) {
+              swiglu_compact_rows<2><<<blocks, 128, 0, stream>>>(
+                  in, out, scale, mask_ptr, num_experts, tokens_per_expert,
+                  limit_f);
+            } else {
+              swiglu_compact_rows<1><<<blocks, 256, 0, stream>>>(
+                  in, out, scale, mask_ptr, num_experts, tokens_per_expert,
+                  limit_f);
+            }
+            return;
+          }
+        }
+        // Preserve the pre-compact launch grid for every non-target signature.
+        if (num_experts == 16 || num_experts == 48) {
+          expected_blocks = std::max<int64_t>(expected_blocks, 16);
+        }
       }
 #endif
       const int grid_y = static_cast<int>(std::max<int64_t>(
