@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Hygon Information Technology Co., Ltd.
 # SPDX-License-Identifier: Apache-2.0
 
+import os
 from typing import Optional
 from lightop import op
 import torch
@@ -149,6 +150,50 @@ def fast_topk_transform_sparse_mask_fused(
         cu_seqlens_q,
     )
     return dst_page_table
+
+def fast_topk_transform_sparse_mask_fused_v2(
+    score: torch.Tensor,
+    nonzero_mask: torch.Tensor,
+    lengths: torch.Tensor,
+    page_table_size_1: torch.Tensor,
+    cu_seqlens_q: Optional[torch.Tensor],
+    topk: int,
+) -> torch.Tensor:
+    """Triton alternative to :func:`fast_topk_transform_sparse_mask_fused`.
+
+    Same contract and same selected set, but the work is spread over
+    ``rows x ceil(width / 8192)`` programs instead of one block per row, which
+    removes the 6.25 % occupancy of the HIP kernel on a 64-CU device.
+
+    Falls back to :func:`fast_topk_transform_sparse_mask_fused` when Triton is
+    unavailable or the inputs are not on a HIP device.
+    """
+
+    from . import fuse_topk_transform_triton as triton_impl
+
+    if not triton_impl.is_available() or not score.is_cuda:
+        return fast_topk_transform_sparse_mask_fused(
+            score,
+            nonzero_mask,
+            lengths,
+            page_table_size_1,
+            cu_seqlens_q,
+            topk,
+        )
+    return triton_impl.sparse_mask_topk_triton(
+        score,
+        nonzero_mask,
+        lengths,
+        page_table_size_1,
+        cu_seqlens_q,
+        topk,
+    )
+
+
+def sparse_mask_topk_triton_enabled() -> bool:
+    """Whether ``LIGHTOP_SPARSE_MASK_TOPK_TRITON=1`` opts into the Triton path."""
+
+    return os.getenv("LIGHTOP_SPARSE_MASK_TOPK_TRITON", "0") not in ("", "0", "false", "False")
 
 def topk_transform_ragged_v2(
     scores: torch.Tensor,
