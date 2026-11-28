@@ -194,8 +194,8 @@ int get_sms_info() {
     else if (arch.rfind("gfx938", 0) == 0 && num_cus == 72) {
         sms = 144;
     }
-    else if (arch.rfind("gfx946", 0) == 0 && num_cus > 0) {
-        sms = num_cus * 2;
+    else if (arch.rfind("gfx946", 0) == 0 && num_cus > 0) { // gfx946 48cu
+        sms = 128;
     }
     else if ((arch.rfind("gfx928", 0) == 0 || arch.rfind("gfx92a", 0) == 0) && num_cus == 120) {
         sms = 240;
