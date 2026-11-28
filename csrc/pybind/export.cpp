@@ -1803,6 +1803,22 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("markov_gemv_add_argmax", &lightop::sampling::markov_gemv_add_argmax,
         py::arg("latent"), py::arg("weight"), py::arg("base_logits"),
         "BF16 rank-256 Markov GEMV + BF16/FP32 logits add + greedy argmax (BS1-4)");
+  m.def("dsv41_markov_fp8_partials",
+        static_cast<void (*)(const torch::Tensor&, const torch::Tensor&,
+            const torch::Tensor&, const torch::Tensor&, const torch::Tensor&,
+            const torch::Tensor&, int64_t, int64_t, torch::Tensor, int64_t, bool, int64_t)>(
+                &lightop::sampling::dsv41_markov_fp8_partials),
+        py::arg("base"), py::arg("prev"), py::arg("embedding"), py::arg("embedding_scale"),
+        py::arg("weight"), py::arg("weight_scale"), py::arg("vocab_start"),
+        py::arg("vocab_size"), py::arg("out"), py::arg("tile_rows") = 128,
+        py::arg("packed_argmax") = false, py::arg("k_stage") = 256);
+  m.def("dsv41_markov_compact_partials", &lightop::sampling::dsv41_markov_compact_partials,
+        py::arg("partials"), py::arg("out"));
+  m.def("dsv41_markov_merge_partials",
+        static_cast<void (*)(const torch::Tensor&, int64_t, int64_t, torch::Tensor, bool)>(
+            &lightop::sampling::dsv41_markov_merge_partials),
+        py::arg("partials"), py::arg("rows"), py::arg("world_size"), py::arg("out"),
+        py::arg("packed_argmax") = false);
   m.def("top_k_sampling_from_probs", &lightop::sampling::top_k_sampling_from_probs, "top_k_sampling_from_probs");
   m.def("top_p_sampling_from_probs", &lightop::sampling::top_p_sampling_from_probs, "top_p_sampling_from_probs");
   m.def("top_k_top_p_sampling_from_probs", &lightop::sampling::top_k_top_p_sampling_from_probs, "top_k_top_p_sampling_from_probs");
