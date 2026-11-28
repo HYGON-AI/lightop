@@ -131,3 +131,7 @@ __all__ = [
     "topk_ids_postprocess",
     "topk_softmax",
 ]
+
+from .minimax31_shared_w8a8 import minimax31_shared_gate_up_w8a8
+
+__all__.append("minimax31_shared_gate_up_w8a8")

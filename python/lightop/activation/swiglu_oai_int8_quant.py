@@ -69,18 +69,34 @@ def _limit(limit):
     return 0.0 if limit is None else float(limit)
 
 def swiglu_oai_int8_quant_contiguous(
-    input, alpha=1.702, beta=1.0, limit=7.0, output=None, scales=None,
+    input, alpha=1.702, beta=1.0, limit=7.0, output=None, scales=None, *,
+    vllm_compatible=False, block_threads=None,
 ):
-    """FP32 OAI -> BF16 -> absmax/127; RNE INT8 in [-127,127].
+    """FP32 OAI -> BF16 -> row INT8 and FP32 scale, with optional output buffers.
 
-    Zero rows use scale 1e-10/127. Persistent output buffers support graph replay.
+    The default floors absmax at 1e-10. With vllm_compatible=True, aligned
+    contiguous BF16 [rows,6144] uses the unfloored row maximum and rounds
+    after multiplying by float32 (127 / absmax). Zero rows return zero scale.
+    Both modes support persistent output buffers and graph replay. Warm up
+    each alpha and limit combination before capturing a graph.
     """
     output, scales = _buffers(input, output, scales)
     limit = _limit(limit)
     alpha, beta = float(alpha), float(beta)
     if input.ndim != 2:
         raise ValueError("Contiguous entry requires [rows,2H]")
-    if input.numel() == 0:
+    if vllm_compatible:
+        native_vllm = getattr(_op, "swiglu_oai_int8_quant_vllm_contiguous", None)
+        if native_vllm is None:
+            raise RuntimeError("Rebuild LightOp for vLLM-compatible OAI INT8 quantization")
+        gate = None
+        if input.shape[1] in (6144, 12288) and input.numel() != 0:
+            gate, _ = _get_tables(input, alpha, limit)
+        if block_threads is None:
+            native_vllm(input, output, scales, alpha, beta, limit, gate)
+        else:
+            native_vllm(input, output, scales, alpha, beta, limit, gate, block_threads)
+    elif input.numel() == 0:
         _native.contiguous(input, output, scales, alpha, beta, limit)
     elif input.shape[-1] == 6144 and input.data_ptr()%16 == 0 and output.data_ptr()%8 == 0:
         gate, quant = _get_tables(input, alpha, limit)
@@ -89,6 +105,21 @@ def swiglu_oai_int8_quant_contiguous(
     else:
         _native.contiguous(input, output, scales, alpha, beta, limit)
     return output, scales
+
+def swiglu_oai_int8_quant_transposed(
+    input, alpha=1.702, beta=1.0, limit=7.0, output=None, scales=None, *, config=0,
+):
+    """Consume column-major shared gate/up directly, returning vLLM INT8 and scale."""
+    output, scales = _buffers(input, output, scales)
+    if input.ndim != 2 or input.shape[1] not in (6144, 12288):
+        raise ValueError("Expected column-major MiniMax shared gate/up")
+    limit = _limit(limit)
+    gate, _ = _get_tables(input, float(alpha), limit)
+    _op.swiglu_oai_int8_quant_vllm_transposed(
+        input, output, scales, float(alpha), float(beta), limit, gate, config,
+    )
+    return output, scales
+
 
 def swiglu_oai_int8_quant_masked(
     input, tokens_per_expert, alpha=1.702, beta=1.0, limit=7.0,
@@ -102,13 +133,14 @@ def swiglu_oai_int8_quant_masked(
 
 def swiglu_oai_int8_quant_masked_flat(
     input, tokens_per_expert, alpha=1.702, beta=1.0, limit=7.0,
-    output=None, scales=None,
+    output=None, scales=None, *, block_threads=256, grid_blocks=256,
 ):
     """Quantize ONLY live rows of [16,M,2H]; padding remains unspecified.
 
     Requires H%8==0, H<=8192 and 16/8-byte input/output alignment. The consumer
     must mask padding. Counts stay on device and can change during graph replay.
     Other expert counts/layouts retain zero/unit padding through the fallback.
+    block_threads and grid_blocks tune the live-only path on wave64 devices.
     """
     output, scales = _buffers(input, output, scales)
     alpha, beta, limit = float(alpha), float(beta), _limit(limit)
@@ -118,7 +150,7 @@ def swiglu_oai_int8_quant_masked_flat(
         and input.data_ptr()%16 == 0 and output.data_ptr()%8 == 0 and input.numel()):
         gate, quant = _get_tables(input, alpha, limit)
         _native.masked_flat_tables(input, output, scales, tokens_per_expert,
-                                  gate, quant, alpha, beta, limit, 256, 256)
+                                  gate, quant, alpha, beta, limit, block_threads, grid_blocks)
     else:
         _native.masked(input, output, scales, tokens_per_expert, alpha, beta, limit)
     return output, scales
